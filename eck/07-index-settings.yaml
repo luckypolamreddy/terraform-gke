@@ -1,0 +1,84 @@
+# Kubernetes Job to configure default index settings
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: setup-index-settings
+  namespace: elastic-stack
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: curlimages/curl:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              ES_URL="https://${ES_CLUSTER_NAME}-es-http.elastic-stack.svc:9200"
+              ES_PASS=$(cat /mnt/elastic-internal/users/elastic)
+
+              echo "Waiting for Elasticsearch..."
+              until curl -sk -u "elastic:$ES_PASS" "$ES_URL/_cluster/health" | grep -q '"status"'; do
+                sleep 10
+              done
+
+              echo "Setting default index template with slow log and synonyms..."
+              curl -sk -u "elastic:$ES_PASS" -X PUT "$ES_URL/_index_template/default-settings" \
+                -H 'Content-Type: application/json' \
+                -d '{
+                  "index_patterns": ["*"],
+                  "priority": 0,
+                  "template": {
+                    "settings": {
+                      "index.search.slowlog.threshold.query.warn": "10s",
+                      "index.search.slowlog.threshold.query.info": "5s",
+                      "index.search.slowlog.threshold.query.debug": "2s",
+                      "index.search.slowlog.threshold.fetch.warn": "1s",
+                      "index.search.slowlog.threshold.fetch.info": "800ms",
+                      "index.indexing.slowlog.threshold.index.warn": "10s",
+                      "index.indexing.slowlog.threshold.index.info": "5s",
+                      "index.number_of_replicas": 1,
+                      "index.refresh_interval": "5s"
+                    }
+                  }
+                }'
+              echo ""
+              echo "Default index template configured."
+
+              echo "Creating synonym analyzer index template..."
+              curl -sk -u "elastic:$ES_PASS" -X PUT "$ES_URL/_index_template/synonym-analyzer" \
+                -H 'Content-Type: application/json' \
+                -d '{
+                  "index_patterns": ["app-*"],
+                  "priority": 10,
+                  "template": {
+                    "settings": {
+                      "analysis": {
+                        "filter": {
+                          "synonym_filter": {
+                            "type": "synonym",
+                            "synonyms_path": "synonyms/synonyms.txt"
+                          }
+                        },
+                        "analyzer": {
+                          "synonym_analyzer": {
+                            "tokenizer": "standard",
+                            "filter": ["lowercase", "synonym_filter"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }'
+              echo ""
+              echo "Synonym analyzer template configured."
+          volumeMounts:
+            - name: es-user
+              mountPath: /mnt/elastic-internal/users
+              readOnly: true
+      volumes:
+        - name: es-user
+          secret:
+            secretName: ${ES_CLUSTER_NAME}-es-elastic-user

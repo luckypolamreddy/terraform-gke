@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-synonyms
+  namespace: elastic-stack
+  labels:
+    app: elasticsearch
+    purpose: synonyms
+data:
+  synonyms.txt: |
+    # Synonym rules - one per line
+    # Format: word1, word2 => canonical_form
+    # OR: word1, word2, word3 (all equivalent)
+
+    # Example business synonyms - customize per your needs
+    laptop, notebook => laptop
+    mobile, cellphone, smartphone => mobile
+    tv, television => television
+    automobile, car, vehicle => vehicle
+
+    # Technical synonyms
+    k8s, kubernetes
+    es, elasticsearch
+    kb, kibana
+
+    # Add your domain-specific synonyms below

@@ -1,0 +1,198 @@
+# Pipeline: ECK Destroy
+# Removes ECK stack and operator in correct order
+
+trigger: none
+
+parameters:
+  - name: project
+    displayName: 'GCP Project'
+    type: string
+    default: project-a
+    values:
+      - project-a
+      - project-b
+
+  - name: clusterName
+    displayName: 'GKE Cluster Name'
+    type: string
+
+  - name: clusterLocation
+    displayName: 'GKE Cluster Location'
+    type: string
+    default: us-east1
+
+  - name: esClusterName
+    displayName: 'Elasticsearch Cluster Name'
+    type: string
+    default: elastic-prod
+
+  - name: removeOperator
+    displayName: 'Also remove ECK operator?'
+    type: boolean
+    default: true
+
+  - name: eckOperatorVersion
+    displayName: 'ECK Operator Version (for removal)'
+    type: string
+    default: '9.1.3'
+
+variables:
+  - group: gcp-credentials-${{ parameters.project }}
+
+stages:
+  # Stage 1: Remove monitoring (if exists)
+  - stage: RemoveMonitoring
+    displayName: 'Remove Monitoring'
+    jobs:
+      - deployment: CleanMonitoring
+        displayName: 'Remove Monitoring Resources'
+        environment: '${{ parameters.project }}-eck'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: Bash@3
+                  displayName: 'Authenticate to GKE'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+                      gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+                      gcloud container clusters get-credentials ${{ parameters.clusterName }} \
+                        --region ${{ parameters.clusterLocation }} \
+                        --project $(GCP_PROJECT_ID)
+
+                - task: Kubernetes@1
+                  displayName: 'Delete Metricbeat'
+                  continueOnError: true
+                  inputs:
+                    command: delete
+                    arguments: 'beat --all -n elastic-stack'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete Monitoring Cluster'
+                  continueOnError: true
+                  inputs:
+                    command: delete
+                    arguments: 'kibana,elasticsearch -l app.kubernetes.io/part-of=monitoring -n elastic-stack'
+
+  # Stage 2: Remove Elastic Stack
+  - stage: RemoveStack
+    displayName: 'Remove Elastic Stack'
+    dependsOn: RemoveMonitoring
+    jobs:
+      - deployment: CleanStack
+        displayName: 'Remove ES & Kibana'
+        environment: '${{ parameters.project }}-eck'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: Bash@3
+                  displayName: 'Authenticate to GKE'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+                      gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+                      gcloud container clusters get-credentials ${{ parameters.clusterName }} \
+                        --region ${{ parameters.clusterLocation }} \
+                        --project $(GCP_PROJECT_ID)
+
+                # Delete setup jobs
+                - task: Kubernetes@1
+                  displayName: 'Delete Setup Jobs'
+                  continueOnError: true
+                  inputs:
+                    command: delete
+                    arguments: 'job setup-snapshot-repo setup-index-settings -n elastic-stack'
+
+                # Delete Kibana first
+                - task: Kubernetes@1
+                  displayName: 'Delete Kibana'
+                  continueOnError: true
+                  inputs:
+                    command: delete
+                    arguments: 'kibana ${{ parameters.esClusterName }} -n elastic-stack'
+
+                - task: Bash@3
+                  displayName: 'Wait for Kibana deletion'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      kubectl -n elastic-stack wait --for=delete kibana/${{ parameters.esClusterName }} --timeout=120s 2>/dev/null || true
+
+                # Delete Elasticsearch
+                - task: Kubernetes@1
+                  displayName: 'Delete Elasticsearch'
+                  continueOnError: true
+                  inputs:
+                    command: delete
+                    arguments: 'elasticsearch ${{ parameters.esClusterName }} -n elastic-stack'
+
+                - task: Bash@3
+                  displayName: 'Wait for ES deletion'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      kubectl -n elastic-stack wait --for=delete elasticsearch/${{ parameters.esClusterName }} --timeout=300s 2>/dev/null || true
+
+                # Delete secrets and configmaps
+                - task: Kubernetes@1
+                  displayName: 'Delete Secrets & ConfigMaps'
+                  continueOnError: true
+                  inputs:
+                    command: delete
+                    arguments: 'secret gcs-credentials configmap elasticsearch-synonyms -n elastic-stack'
+
+  # Stage 3: Remove Operator (optional)
+  - stage: RemoveOperator
+    displayName: 'Remove ECK Operator'
+    dependsOn: RemoveStack
+    condition: eq('${{ parameters.removeOperator }}', true)
+    jobs:
+      - deployment: CleanOperator
+        displayName: 'Remove ECK Operator'
+        environment: '${{ parameters.project }}-eck'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: Bash@3
+                  displayName: 'Authenticate to GKE'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+                      gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+                      gcloud container clusters get-credentials ${{ parameters.clusterName }} \
+                        --region ${{ parameters.clusterLocation }} \
+                        --project $(GCP_PROJECT_ID)
+
+                - task: Kubernetes@1
+                  displayName: 'Delete License'
+                  continueOnError: true
+                  inputs:
+                    command: delete
+                    arguments: 'secret eck-trial-license -n elastic-system'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete ECK Operator'
+                  inputs:
+                    command: delete
+                    arguments: '-f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/operator.yaml'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete ECK CRDs'
+                  inputs:
+                    command: delete
+                    arguments: '-f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/crds.yaml'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete Namespaces'
+                  continueOnError: true
+                  inputs:
+                    command: delete
+                    arguments: 'namespace elastic-system elastic-stack'

@@ -1,0 +1,85 @@
+# Dedicated monitoring Elasticsearch cluster
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: ${MONITORING_CLUSTER_NAME}
+  namespace: elastic-stack
+spec:
+  version: ${ES_VERSION}
+
+  nodeSets:
+    - name: monitoring
+      count: ${MONITORING_NODE_COUNT}
+      config:
+        node.roles: ["master", "data", "ingest"]
+        node.store.allow_mmap: false
+      podTemplate:
+        spec:
+          # Run on controlplane-pool
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: role
+                        operator: In
+                        values:
+                          - controlplane
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+          containers:
+            - name: elasticsearch
+              resources:
+                requests:
+                  memory: 4Gi
+                  cpu: "1"
+                limits:
+                  memory: 4Gi
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms2g -Xmx2g"
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: premium-rwo
+            resources:
+              requests:
+                storage: 100Gi
+
+  http:
+    service:
+      spec:
+        type: LoadBalancer
+---
+# Monitoring Kibana
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: ${MONITORING_CLUSTER_NAME}
+  namespace: elastic-stack
+spec:
+  version: ${ES_VERSION}
+  count: 1
+  elasticsearchRef:
+    name: ${MONITORING_CLUSTER_NAME}
+  podTemplate:
+    spec:
+      containers:
+        - name: kibana
+          resources:
+            requests:
+              memory: 1Gi
+              cpu: 500m
+            limits:
+              memory: 1Gi
+  http:
+    service:
+      spec:
+        type: LoadBalancer

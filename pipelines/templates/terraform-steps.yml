@@ -1,0 +1,63 @@
+# Reusable template for Terraform init, plan, apply/destroy
+parameters:
+  - name: action
+    type: string
+    values:
+      - apply
+      - destroy
+  - name: workingDirectory
+    type: string
+  - name: tfvarsFile
+    type: string
+  - name: backendBucket
+    type: string
+  - name: backendPrefix
+    type: string
+  - name: credentialsFile
+    type: string
+    default: '$(Agent.TempDirectory)/gcp-key.json'
+  - name: extraVars
+    type: string
+    default: ''
+
+steps:
+  - task: Bash@3
+    displayName: 'Write GCP credentials file'
+    inputs:
+      targetType: inline
+      script: echo '$(GCP_SA_KEY)' > ${{ parameters.credentialsFile }}
+
+  - task: Bash@3
+    displayName: 'Terraform Init'
+    inputs:
+      targetType: inline
+      workingDirectory: ${{ parameters.workingDirectory }}
+      script: |
+        terraform init \
+          -backend-config="bucket=${{ parameters.backendBucket }}" \
+          -backend-config="prefix=${{ parameters.backendPrefix }}"
+
+  - task: Bash@3
+    displayName: 'Terraform Plan (${{ parameters.action }})'
+    inputs:
+      targetType: inline
+      workingDirectory: ${{ parameters.workingDirectory }}
+      script: |
+        DESTROY_FLAG=""
+        if [ "${{ parameters.action }}" = "destroy" ]; then
+          DESTROY_FLAG="-destroy"
+        fi
+
+        terraform plan \
+          -var-file="${{ parameters.tfvarsFile }}" \
+          -var="credentials_file=${{ parameters.credentialsFile }}" \
+          ${{ parameters.extraVars }} \
+          $DESTROY_FLAG \
+          -out=tfplan
+
+  - task: Bash@3
+    displayName: 'Terraform ${{ parameters.action }}'
+    inputs:
+      targetType: inline
+      workingDirectory: ${{ parameters.workingDirectory }}
+      script: terraform apply tfplan

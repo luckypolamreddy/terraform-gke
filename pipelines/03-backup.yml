@@ -1,0 +1,52 @@
+# Pipeline: GKE Backup Plan
+# Handles backup plan create/destroy with automatic cleanup
+
+trigger: none
+
+parameters:
+  - name: action
+    displayName: 'Action'
+    type: string
+    default: apply
+    values:
+      - apply
+      - destroy
+
+  - name: project
+    displayName: 'GCP Project'
+    type: string
+    default: project-a
+    values:
+      - project-a
+      - project-b
+
+  - name: clusterConfig
+    displayName: 'Cluster config'
+    type: string
+    default: cluster-1
+    values:
+      - cluster-1
+
+variables:
+  - group: gcp-credentials-${{ parameters.project }}
+
+stages:
+  - stage: Backup
+    displayName: 'Backup Plan - ${{ parameters.action }}'
+    jobs:
+      - deployment: TerraformBackup
+        displayName: 'Terraform Backup'
+        environment: '${{ parameters.project }}-backup'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - template: templates/terraform-steps.yml
+                  parameters:
+                    action: ${{ parameters.action }}
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/backup'
+                    tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/backup-${{ parameters.clusterConfig }}.tfvars'
+                    backendBucket: '$(TF_STATE_BUCKET)'
+                    backendPrefix: 'backup/${{ parameters.project }}/${{ parameters.clusterConfig }}'

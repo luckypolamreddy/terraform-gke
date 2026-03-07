@@ -1,0 +1,11 @@
+resource "google_compute_network" "vpc" {
+  name                    = var.vpc_name
+  project                 = var.project_id
+  auto_create_subnetworks = false
+  routing_mode            = var.routing_mode
+  description             = var.description
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}

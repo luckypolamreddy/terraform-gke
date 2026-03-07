@@ -1,0 +1,73 @@
+# Pipeline: Foundation (VPC, GCS Bucket, Secret Manager)
+# These resources persist across cluster lifecycles
+
+trigger: none
+
+parameters:
+  - name: action
+    displayName: 'Action'
+    type: string
+    default: apply
+    values:
+      - apply
+      - destroy
+
+  - name: project
+    displayName: 'GCP Project'
+    type: string
+    default: project-a
+    values:
+      - project-a
+      - project-b
+
+  - name: vpcName
+    displayName: 'VPC Name (leave empty to use tfvars default)'
+    type: string
+    default: ''
+
+  - name: gcsBucketName
+    displayName: 'GCS Bucket Name (leave empty to use tfvars default)'
+    type: string
+    default: ''
+
+variables:
+  - group: gcp-credentials-${{ parameters.project }}
+  # Variable group should contain: GCP_SA_KEY, TF_STATE_BUCKET
+
+stages:
+  - stage: Foundation
+    displayName: 'Foundation - ${{ parameters.action }}'
+    jobs:
+      - deployment: TerraformFoundation
+        displayName: 'Terraform Foundation'
+        environment: '${{ parameters.project }}-foundation'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                # Build extra -var flags from pipeline parameters
+                - task: Bash@3
+                  name: buildVars
+                  displayName: 'Build variable overrides'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      EXTRA=""
+                      if [ -n "${{ parameters.vpcName }}" ]; then
+                        EXTRA="$EXTRA -var=vpc_name=${{ parameters.vpcName }}"
+                      fi
+                      if [ -n "${{ parameters.gcsBucketName }}" ]; then
+                        EXTRA="$EXTRA -var=gcs_bucket_name=${{ parameters.gcsBucketName }}"
+                      fi
+                      echo "##vso[task.setvariable variable=EXTRA_VARS;isOutput=true]$EXTRA"
+
+                - template: templates/terraform-steps.yml
+                  parameters:
+                    action: ${{ parameters.action }}
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/foundation'
+                    tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/foundation.tfvars'
+                    backendBucket: '$(TF_STATE_BUCKET)'
+                    backendPrefix: 'foundation/${{ parameters.project }}'
+                    extraVars: '$(buildVars.EXTRA_VARS)'

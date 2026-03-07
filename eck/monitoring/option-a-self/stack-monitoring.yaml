@@ -1,0 +1,29 @@
+# Enable Stack Monitoring in the Elasticsearch cluster
+# This patches the existing Elasticsearch resource to enable self-monitoring
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: ${ES_CLUSTER_NAME}
+  namespace: elastic-stack
+spec:
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: ${ES_CLUSTER_NAME}
+    logs:
+      elasticsearchRefs:
+        - name: ${ES_CLUSTER_NAME}
+---
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: ${ES_CLUSTER_NAME}
+  namespace: elastic-stack
+spec:
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: ${ES_CLUSTER_NAME}
+    logs:
+      elasticsearchRefs:
+        - name: ${ES_CLUSTER_NAME}

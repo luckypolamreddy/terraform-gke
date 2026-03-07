@@ -1,0 +1,65 @@
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: ${ES_CLUSTER_NAME}
+  namespace: elastic-stack
+spec:
+  version: ${ES_VERSION}
+  count: 2
+
+  elasticsearchRef:
+    name: ${ES_CLUSTER_NAME}
+
+  config:
+    # Server settings
+    server.name: kibana
+    server.publicBaseUrl: "https://${KIBANA_EXTERNAL_HOST}:5601"
+
+    # Logging
+    logging.root.level: info
+    logging.appenders.default:
+      type: console
+      layout:
+        type: json
+
+    # Security
+    xpack.security.encryptionKey: "${KIBANA_ENCRYPTION_KEY}"
+    xpack.encryptedSavedObjects.encryptionKey: "${KIBANA_SAVED_OBJECTS_KEY}"
+    xpack.reporting.encryptionKey: "${KIBANA_REPORTING_KEY}"
+
+    # Stack monitoring
+    monitoring.kibana.collection.enabled: true
+
+  podTemplate:
+    metadata:
+      labels:
+        app: kibana
+    spec:
+      # Kibana runs on controlplane-pool (no taints)
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: role
+                    operator: In
+                    values:
+                      - controlplane
+      containers:
+        - name: kibana
+          resources:
+            requests:
+              memory: 2Gi
+              cpu: "1"
+            limits:
+              memory: 2Gi
+
+  # External LoadBalancer for Kibana
+  http:
+    service:
+      spec:
+        type: LoadBalancer
+    tls:
+      selfSignedCertificate:
+        disabled: false

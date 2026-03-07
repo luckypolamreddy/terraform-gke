@@ -1,0 +1,153 @@
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: ${ES_CLUSTER_NAME}
+  namespace: elastic-stack
+spec:
+  version: ${ES_VERSION}
+
+  # GCS repository plugin for snapshots
+  secureSettings:
+    - secretName: gcs-credentials
+
+  # Node sets: master, data
+  nodeSets:
+    # ---- Master Nodes ----
+    - name: master
+      count: 3
+      config:
+        node.roles: ["master"]
+        # Slow log settings
+        index.search.slowlog.threshold.query.warn: "10s"
+        index.search.slowlog.threshold.query.info: "5s"
+        index.search.slowlog.threshold.query.debug: "2s"
+        index.search.slowlog.threshold.fetch.warn: "1s"
+        index.search.slowlog.threshold.fetch.info: "800ms"
+        index.indexing.slowlog.threshold.index.warn: "10s"
+        index.indexing.slowlog.threshold.index.info: "5s"
+        # JVM heap - 50% of container memory
+        node.store.allow_mmap: false
+      podTemplate:
+        metadata:
+          labels:
+            elastic-role: master
+        spec:
+          # Tolerate tainted master nodes
+          tolerations:
+            - key: "elastic-role"
+              value: "master"
+              effect: "NoSchedule"
+          # Schedule on master node pool
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: elastic-role
+                        operator: In
+                        values:
+                          - master
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+          containers:
+            - name: elasticsearch
+              resources:
+                requests:
+                  memory: 8Gi
+                  cpu: "2"
+                limits:
+                  memory: 8Gi
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms4g -Xmx4g"
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: premium-rwo
+            resources:
+              requests:
+                storage: 50Gi
+
+    # ---- Data Nodes ----
+    - name: data
+      count: 3
+      config:
+        node.roles: ["data", "data_content", "data_hot", "ingest", "transform"]
+        # Slow log settings
+        index.search.slowlog.threshold.query.warn: "10s"
+        index.search.slowlog.threshold.query.info: "5s"
+        index.search.slowlog.threshold.query.debug: "2s"
+        index.search.slowlog.threshold.fetch.warn: "1s"
+        index.search.slowlog.threshold.fetch.info: "800ms"
+        index.indexing.slowlog.threshold.index.warn: "10s"
+        index.indexing.slowlog.threshold.index.info: "5s"
+        node.store.allow_mmap: false
+        # Synonyms filter path
+        path.repo: ["/usr/share/elasticsearch/config/synonyms"]
+      podTemplate:
+        metadata:
+          labels:
+            elastic-role: data
+        spec:
+          tolerations:
+            - key: "elastic-role"
+              value: "data"
+              effect: "NoSchedule"
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: elastic-role
+                        operator: In
+                        values:
+                          - data
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+          containers:
+            - name: elasticsearch
+              resources:
+                requests:
+                  memory: 32Gi
+                  cpu: "8"
+                limits:
+                  memory: 32Gi
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms16g -Xmx16g"
+              volumeMounts:
+                - name: synonyms
+                  mountPath: /usr/share/elasticsearch/config/synonyms
+                  readOnly: true
+          volumes:
+            - name: synonyms
+              configMap:
+                name: elasticsearch-synonyms
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: premium-rwo
+            resources:
+              requests:
+                storage: 500Gi
+
+  # External LoadBalancer for Elasticsearch
+  http:
+    service:
+      spec:
+        type: LoadBalancer
+    tls:
+      selfSignedCertificate:
+        disabled: false

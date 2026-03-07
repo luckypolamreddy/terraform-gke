@@ -1,0 +1,131 @@
+apiVersion: beat.k8s.elastic.co/v1beta1
+kind: Beat
+metadata:
+  name: metricbeat-monitoring
+  namespace: elastic-stack
+spec:
+  type: metricbeat
+  version: ${ES_VERSION}
+  elasticsearchRef:
+    name: ${ES_CLUSTER_NAME}
+  kibanaRef:
+    name: ${ES_CLUSTER_NAME}
+  config:
+    metricbeat.modules:
+      # Elasticsearch module
+      - module: elasticsearch
+        xpack.enabled: true
+        period: 10s
+        hosts:
+          - "https://${ES_CLUSTER_NAME}-es-http.elastic-stack.svc:9200"
+        username: "${MONITORING_USER}"
+        password: "${MONITORING_PASSWORD}"
+        ssl.verification_mode: "none"
+        metricsets:
+          - node
+          - node_stats
+          - cluster_stats
+          - index
+          - index_summary
+          - shard
+          - pending_tasks
+          - enrich
+      # Kibana module
+      - module: kibana
+        xpack.enabled: true
+        period: 10s
+        hosts:
+          - "https://${ES_CLUSTER_NAME}-kb-http.elastic-stack.svc:5601"
+        username: "${MONITORING_USER}"
+        password: "${MONITORING_PASSWORD}"
+        ssl.verification_mode: "none"
+        metricsets:
+          - stats
+          - status
+      # System module for node-level metrics
+      - module: system
+        period: 10s
+        metricsets:
+          - cpu
+          - load
+          - memory
+          - network
+          - process
+          - process_summary
+          - socket_summary
+          - filesystem
+          - fsstat
+        process.include_top_n.by_cpu: 5
+        process.include_top_n.by_memory: 5
+  daemonSet:
+    podTemplate:
+      spec:
+        serviceAccountName: metricbeat
+        automountServiceAccountToken: true
+        # Run on controlplane-pool (no taints)
+        affinity:
+          nodeAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                    - key: role
+                      operator: In
+                      values:
+                        - controlplane
+        # Also tolerate elastic node taints to collect metrics from all nodes
+        tolerations:
+          - key: "elastic-role"
+            operator: "Exists"
+            effect: "NoSchedule"
+        containers:
+          - name: metricbeat
+            resources:
+              requests:
+                memory: 256Mi
+                cpu: 100m
+              limits:
+                memory: 512Mi
+        dnsPolicy: ClusterFirstWithHostNet
+        hostNetwork: true
+        securityContext:
+          runAsUser: 0
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: metricbeat
+  namespace: elastic-stack
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metricbeat
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "events", "pods", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: metricbeat
+subjects:
+  - kind: ServiceAccount
+    name: metricbeat
+    namespace: elastic-stack
+roleRef:
+  kind: ClusterRole
+  name: metricbeat
+  apiGroup: rbac.authorization.k8s.io

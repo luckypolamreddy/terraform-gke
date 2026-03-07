@@ -1,0 +1,70 @@
+# Kubernetes Job to configure GCS snapshot repository in Elasticsearch
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: setup-snapshot-repo
+  namespace: elastic-stack
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: curlimages/curl:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              ES_URL="https://${ES_CLUSTER_NAME}-es-http.elastic-stack.svc:9200"
+              ES_PASS=$(cat /mnt/elastic-internal/users/elastic)
+
+              echo "Waiting for Elasticsearch to be ready..."
+              until curl -sk -u "elastic:$ES_PASS" "$ES_URL/_cluster/health" | grep -q '"status"'; do
+                echo "  Elasticsearch not ready, retrying in 10s..."
+                sleep 10
+              done
+              echo "Elasticsearch is ready."
+
+              echo "Creating GCS snapshot repository..."
+              curl -sk -u "elastic:$ES_PASS" -X PUT "$ES_URL/_snapshot/${SNAPSHOT_REPO_NAME}" \
+                -H 'Content-Type: application/json' \
+                -d '{
+                  "type": "gcs",
+                  "settings": {
+                    "bucket": "${GCS_BUCKET_NAME}",
+                    "base_path": "${SNAPSHOT_BASE_PATH}",
+                    "client": "default"
+                  }
+                }'
+              echo ""
+              echo "Snapshot repository created."
+
+              echo "Creating SLM policy..."
+              curl -sk -u "elastic:$ES_PASS" -X PUT "$ES_URL/_slm/policy/${SLM_POLICY_NAME}" \
+                -H 'Content-Type: application/json' \
+                -d '{
+                  "schedule": "0 0 1 * * ?",
+                  "name": "<daily-snap-{now/d}>",
+                  "repository": "${SNAPSHOT_REPO_NAME}",
+                  "config": {
+                    "indices": ["*"],
+                    "ignore_unavailable": true,
+                    "include_global_state": false
+                  },
+                  "retention": {
+                    "expire_after": "7d",
+                    "min_count": 1,
+                    "max_count": 7
+                  }
+                }'
+              echo ""
+              echo "SLM policy created."
+          volumeMounts:
+            - name: es-user
+              mountPath: /mnt/elastic-internal/users
+              readOnly: true
+      volumes:
+        - name: es-user
+          secret:
+            secretName: ${ES_CLUSTER_NAME}-es-elastic-user

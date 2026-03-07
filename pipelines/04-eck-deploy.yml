@@ -1,0 +1,285 @@
+# Pipeline: ECK Deploy
+# Deploys ECK operator, Elasticsearch, Kibana, snapshots, index settings
+# Syncs Kibana credentials to GCP Secret Manager
+
+trigger: none
+
+parameters:
+  - name: project
+    displayName: 'GCP Project'
+    type: string
+    default: project-a
+    values:
+      - project-a
+      - project-b
+
+  - name: clusterName
+    displayName: 'GKE Cluster Name'
+    type: string
+
+  - name: clusterLocation
+    displayName: 'GKE Cluster Location'
+    type: string
+    default: us-east1
+
+  - name: esClusterName
+    displayName: 'Elasticsearch Cluster Name'
+    type: string
+    default: elastic-prod
+
+  - name: esVersion
+    displayName: 'Elasticsearch Version'
+    type: string
+    default: '9.1.3'
+
+  - name: eckOperatorVersion
+    displayName: 'ECK Operator Version'
+    type: string
+    default: '9.1.3'
+
+  - name: gcsBucketName
+    displayName: 'GCS Bucket for Snapshots'
+    type: string
+
+  - name: snapshotRepoName
+    displayName: 'Snapshot Repository Name'
+    type: string
+    default: gcs-snapshots
+
+  - name: snapshotBasePath
+    displayName: 'Snapshot Base Path in Bucket'
+    type: string
+    default: es-snapshots
+
+  - name: slmPolicyName
+    displayName: 'SLM Policy Name'
+    type: string
+    default: daily-snapshots
+
+  - name: kibanaEncryptionKey
+    displayName: 'Kibana Encryption Key (32+ chars)'
+    type: string
+    default: 'change-me-to-a-32-char-random-string!!'
+
+variables:
+  - group: gcp-credentials-${{ parameters.project }}
+  # Variable group must contain: GCP_SA_KEY, GCP_PROJECT_ID
+
+stages:
+  # Stage 1: Connect to GKE and deploy ECK operator
+  - stage: ECK_Operator
+    displayName: 'Deploy ECK Operator'
+    jobs:
+      - deployment: DeployOperator
+        displayName: 'ECK Operator'
+        environment: '${{ parameters.project }}-eck'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: Bash@3
+                  displayName: 'Authenticate to GKE'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+                      gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+                      gcloud container clusters get-credentials ${{ parameters.clusterName }} \
+                        --region ${{ parameters.clusterLocation }} \
+                        --project $(GCP_PROJECT_ID)
+
+                - task: Kubernetes@1
+                  displayName: 'Create Namespaces'
+                  inputs:
+                    command: apply
+                    arguments: '-f $(System.DefaultWorkingDirectory)/eck/00-namespaces.yaml'
+
+                - task: Kubernetes@1
+                  displayName: 'Install ECK CRDs'
+                  inputs:
+                    command: apply
+                    arguments: '--server-side -f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/crds.yaml'
+
+                - task: Kubernetes@1
+                  displayName: 'Install ECK Operator'
+                  inputs:
+                    command: apply
+                    arguments: '-f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/operator.yaml'
+
+                - task: Kubernetes@1
+                  displayName: 'Apply Enterprise Trial License'
+                  inputs:
+                    command: apply
+                    arguments: '-f $(System.DefaultWorkingDirectory)/eck/01-enterprise-license.yaml'
+
+                - task: Bash@3
+                  displayName: 'Wait for ECK Operator Ready'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      kubectl -n elastic-system wait --for=condition=available deployment/elastic-operator --timeout=300s
+
+  # Stage 2: Deploy Elasticsearch and Kibana
+  - stage: ECK_Stack
+    displayName: 'Deploy Elasticsearch & Kibana'
+    dependsOn: ECK_Operator
+    jobs:
+      - deployment: DeployStack
+        displayName: 'Elastic Stack'
+        environment: '${{ parameters.project }}-eck'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: Bash@3
+                  displayName: 'Authenticate to GKE'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+                      gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+                      gcloud container clusters get-credentials ${{ parameters.clusterName }} \
+                        --region ${{ parameters.clusterLocation }} \
+                        --project $(GCP_PROJECT_ID)
+
+                # Create GCS credentials secret from service account key
+                - task: Bash@3
+                  displayName: 'Create GCS Credentials Secret'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcs-key.json
+                      kubectl create secret generic gcs-credentials \
+                        --from-file=gcs.client.default.credentials_file=$(Agent.TempDirectory)/gcs-key.json \
+                        -n elastic-stack --dry-run=client -o yaml | kubectl apply -f -
+
+                - task: Kubernetes@1
+                  displayName: 'Apply Synonyms ConfigMap'
+                  inputs:
+                    command: apply
+                    arguments: '-f $(System.DefaultWorkingDirectory)/eck/03-synonyms-configmap.yaml'
+
+                # Apply Elasticsearch manifest with variable substitution
+                - task: Bash@3
+                  displayName: 'Deploy Elasticsearch'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
+                      export ES_VERSION="${{ parameters.esVersion }}"
+                      envsubst < $(System.DefaultWorkingDirectory)/eck/04-elasticsearch.yaml | kubectl apply -f -
+
+                - task: Bash@3
+                  displayName: 'Deploy Kibana'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
+                      export ES_VERSION="${{ parameters.esVersion }}"
+                      export KIBANA_EXTERNAL_HOST="kibana.${{ parameters.project }}.example.com"
+                      export KIBANA_ENCRYPTION_KEY="${{ parameters.kibanaEncryptionKey }}"
+                      export KIBANA_SAVED_OBJECTS_KEY="${{ parameters.kibanaEncryptionKey }}"
+                      export KIBANA_REPORTING_KEY="${{ parameters.kibanaEncryptionKey }}"
+                      envsubst < $(System.DefaultWorkingDirectory)/eck/05-kibana.yaml | kubectl apply -f -
+
+                - task: Bash@3
+                  displayName: 'Wait for Elasticsearch Ready'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      echo "Waiting for Elasticsearch to become green..."
+                      kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green \
+                        elasticsearch/${{ parameters.esClusterName }} --timeout=600s
+                  timeoutInMinutes: 12
+
+                - task: Bash@3
+                  displayName: 'Wait for Kibana Ready'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      echo "Waiting for Kibana to become green..."
+                      kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green \
+                        kibana/${{ parameters.esClusterName }} --timeout=300s
+                  timeoutInMinutes: 7
+
+  # Stage 3: Configure snapshots, index settings, sync credentials
+  - stage: ECK_Configure
+    displayName: 'Configure Snapshots & Settings'
+    dependsOn: ECK_Stack
+    jobs:
+      - deployment: ConfigureECK
+        displayName: 'ECK Configuration'
+        environment: '${{ parameters.project }}-eck'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: Bash@3
+                  displayName: 'Authenticate to GKE'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+                      gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+                      gcloud container clusters get-credentials ${{ parameters.clusterName }} \
+                        --region ${{ parameters.clusterLocation }} \
+                        --project $(GCP_PROJECT_ID)
+
+                # Setup snapshot repository and SLM policy
+                - task: Bash@3
+                  displayName: 'Setup Snapshot Repository & SLM Policy'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
+                      export GCS_BUCKET_NAME="${{ parameters.gcsBucketName }}"
+                      export SNAPSHOT_REPO_NAME="${{ parameters.snapshotRepoName }}"
+                      export SNAPSHOT_BASE_PATH="${{ parameters.snapshotBasePath }}"
+                      export SLM_POLICY_NAME="${{ parameters.slmPolicyName }}"
+                      envsubst < $(System.DefaultWorkingDirectory)/eck/06-snapshot-repository.yaml | kubectl apply -f -
+
+                # Setup default index settings
+                - task: Bash@3
+                  displayName: 'Setup Index Settings'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
+                      envsubst < $(System.DefaultWorkingDirectory)/eck/07-index-settings.yaml | kubectl apply -f -
+
+                # Wait for setup jobs
+                - task: Bash@3
+                  displayName: 'Wait for Setup Jobs'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      kubectl -n elastic-stack wait --for=condition=complete job/setup-snapshot-repo --timeout=300s || true
+                      kubectl -n elastic-stack wait --for=condition=complete job/setup-index-settings --timeout=300s || true
+
+                # Sync Kibana credentials to GCP Secret Manager
+                - task: Bash@3
+                  displayName: 'Sync Kibana Credentials to Secret Manager'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      ES_PASSWORD=$(kubectl get secret ${{ parameters.esClusterName }}-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
+                      KIBANA_LB=$(kubectl get svc ${{ parameters.esClusterName }}-kb-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                      ES_LB=$(kubectl get svc ${{ parameters.esClusterName }}-es-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+                      SECRET_VALUE="{\"username\":\"elastic\",\"password\":\"${ES_PASSWORD}\",\"kibana_url\":\"https://${KIBANA_LB}:5601\",\"elasticsearch_url\":\"https://${ES_LB}:9200\"}"
+
+                      echo -n "$SECRET_VALUE" | gcloud secrets versions add kibana-credentials \
+                        --data-file=- --project=$(GCP_PROJECT_ID) 2>/dev/null || \
+                      echo -n "$SECRET_VALUE" | gcloud secrets versions add elastic-credentials \
+                        --data-file=- --project=$(GCP_PROJECT_ID) 2>/dev/null || true
+
+                      echo "Credentials synced to GCP Secret Manager."
+                      echo "Kibana URL: https://${KIBANA_LB}:5601"
+                      echo "Elasticsearch URL: https://${ES_LB}:9200"
+                      echo "Username: elastic"

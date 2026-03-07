@@ -1,0 +1,111 @@
+###############################################################################
+# Azure DevOps Setup Guide
+###############################################################################
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 1. KUBERNETES SERVICE CONNECTION (one-time setup)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#   Project Settings → Service connections → New → Kubernetes
+#
+#   Method: KubeConfig
+#   - Run locally: gcloud container clusters get-credentials <cluster> --region <region>
+#   - Copy ~/.kube/config content
+#   - Paste into ADO service connection
+#   - Name it: 'eck-dev-k8s', 'eck-staging-k8s', 'eck-production-k8s'
+#
+#   This replaces all shell gcloud auth — every Kubernetes@1 and
+#   KubernetesManifest@1 task references this connection directly.
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2. VARIABLE GROUPS
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#   Pipelines → Library → + Variable group
+#
+#   Name: eck-dev-config (repeat for staging, production)
+#   ┌──────────────────────────┬──────────────────────────┬──────────┐
+#   │ Variable                 │ Example                  │ Secret?  │
+#   ├──────────────────────────┼──────────────────────────┼──────────┤
+#   │ K8S_SERVICE_CONNECTION   │ eck-dev-k8s              │ No       │
+#   │ GCP_PROJECT_ID           │ my-project-dev           │ No       │
+#   │ GCP_REGION               │ us-east1                 │ No       │
+#   │ GKE_CLUSTER_NAME         │ proja-cluster-1          │ No       │
+#   │ GCP_SA_KEY               │ {"type":"service_acc"}   │ YES      │
+#   │ GCS_BUCKET_NAME          │ proja-elastic-snapshots  │ No       │
+#   └──────────────────────────┴──────────────────────────┴──────────┘
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3. ENVIRONMENTS (Approval Gates)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#   Create per env:
+#     eck-<env>-infra           eck-<env>-elasticsearch
+#     eck-<env>-kibana          eck-<env>-production
+#
+#   ┌───────────────────────┬──────┬─────────┬────────────┐
+#   │ Environment           │ Dev  │ Staging │ Production │
+#   ├───────────────────────┼──────┼─────────┼────────────┤
+#   │ eck-*-infra           │ Auto │ 1       │ 1          │
+#   │ eck-*-elasticsearch   │ Auto │ 1       │ 2          │
+#   │ eck-*-kibana          │ Auto │ 1       │ 1          │
+#   │ eck-*-production      │ Auto │ 1       │ 2          │
+#   └───────────────────────┴──────┴─────────┴────────────┘
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4. PIPELINES (11 total: 3 Terraform + 8 ECK)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#   TERRAFORM:
+#     Infra-Foundation          foundation-pipeline.yml
+#     Infra-Cluster             cluster-pipeline.yml
+#     Infra-Backup              backup-pipeline.yml
+#
+#   ECK:
+#     ECK-Deploy                eck-deploy-pipeline.yml
+#     ECK-Destroy               eck-destroy-pipeline.yml
+#     ECK-Resources             eck-resources-pipeline.yml
+#     ECK-Upgrade               eck-upgrade-pipeline.yml
+#     ECK-Operations            eck-operations-pipeline.yml
+#     ECK-Settings              eck-settings-pipeline.yml
+#     ECK-Monitoring-Self       eck-monitoring-self-pipeline.yml
+#     ECK-Monitoring-Dedicated  eck-monitoring-dedicated-pipeline.yml
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. ADO TASKS USED (not shell scripts)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#   KubernetesManifest@1   → Deploy/apply YAML manifests
+#   Kubernetes@1           → get, patch, delete, wait, rollout
+#   ADO template expr      → JVM validation (compile-time, blocks queue)
+#
+#   Shell (script:) ONLY used for:
+#     - openssl rand (generate encryption keys)
+#     - curl to ES REST API (snapshots, SLM, circuit breakers, slow logs)
+#     - sleep (wait for ECK secret regeneration)
+#   These have no equivalent ADO task.
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. QUICK REFERENCE
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#   DEPLOY:
+#     1. Infra-Foundation → apply
+#     2. Infra-Cluster    → apply
+#     3. Infra-Backup     → apply
+#     4. ECK-Deploy
+#     5. ECK-Monitoring-Self or ECK-Monitoring-Dedicated → deploy
+#
+#   DAY-2:
+#     ECK-Resources   → scale, CPU, memory, JVM, storage
+#     ECK-Upgrade     → version upgrade
+#     ECK-Operations  → synonyms, password, snapshots
+#     ECK-Settings    → thread pools, breakers, slow logs, SLM
+#
+#   DESTROY:
+#     1. ECK-Monitoring-Self or Dedicated → destroy
+#     2. ECK-Destroy
+#     3. Infra-Backup  → destroy
+#     4. Infra-Cluster → destroy
+#     5. Infra-Foundation → destroy
+###############################################################################

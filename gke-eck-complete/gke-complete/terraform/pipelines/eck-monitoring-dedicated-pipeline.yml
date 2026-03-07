@@ -1,0 +1,217 @@
+###############################################################################
+# 8. ECK DEDICATED MONITORING — Separate monitoring cluster
+###############################################################################
+trigger: none
+
+parameters:
+  - name: environment
+    displayName: 'Environment'
+    type: string
+    default: 'dev'
+    values: [dev, staging, production]
+  - name: action
+    displayName: 'Action'
+    type: string
+    default: 'deploy'
+    values: [deploy, destroy]
+
+variables:
+  - group: 'eck-${{ parameters.environment }}-config'
+  - name: NS
+    value: 'elastic-stack'
+  - name: MON_PATH
+    value: '$(Build.SourcesDirectory)/eck-stack/10-monitoring/option-b-dedicated-monitoring'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  # ══════════════════════════════════════════════════════
+  # DEPLOY
+  # ══════════════════════════════════════════════════════
+  - ${{ if eq(parameters.action, 'deploy') }}:
+    - stage: MonitoringCluster
+      displayName: 'Deploy Monitoring Cluster'
+      jobs:
+        - deployment: mon_cluster
+          environment: 'eck-${{ parameters.environment }}-production'
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - checkout: self
+                  - template: templates/eck-health-check.yml
+                    parameters:
+                      k8sConnection: '$(K8S_SERVICE_CONNECTION)'
+                      checkElasticsearch: true
+                      timeoutSeconds: 120
+
+                  # Shell: openssl rand — no ADO task
+                  - script: |
+                      if ! kubectl -n $(NS) get secret kibana-monitor-encryption-keys > /dev/null 2>&1; then
+                        kubectl create secret generic kibana-monitor-encryption-keys \
+                          --from-literal=xpack.security.encryptionKey="$(openssl rand -hex 32)" \
+                          --from-literal=xpack.encryptedSavedObjects.encryptionKey="$(openssl rand -hex 32)" \
+                          --from-literal=xpack.reporting.encryptionKey="$(openssl rand -hex 32)" \
+                          -n $(NS)
+                      fi
+                    displayName: 'Generate monitor encryption keys (shell: openssl)'
+
+                  - task: KubernetesManifest@1
+                    displayName: 'Deploy es-monitor + kibana-monitor'
+                    inputs:
+                      action: 'deploy'
+                      connectionType: 'kubernetesServiceConnection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      manifests: '$(MON_PATH)/monitoring-cluster.yaml'
+
+                  - task: Kubernetes@1
+                    displayName: 'Wait: es-monitor green'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'wait'
+                      arguments: '--for=jsonpath={.status.health}=green elasticsearch/es-monitor --timeout=600s'
+
+                  - task: Kubernetes@1
+                    displayName: 'Wait: kibana-monitor green'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'wait'
+                      arguments: '--for=jsonpath={.status.health}=green kibana/kibana-monitor --timeout=300s'
+
+    - stage: DeployBeats
+      displayName: 'Deploy Beats'
+      dependsOn: MonitoringCluster
+      jobs:
+        - deployment: beats
+          environment: 'eck-${{ parameters.environment }}-production'
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - checkout: self
+                  - task: KubernetesManifest@1
+                    displayName: 'Deploy stack monitoring'
+                    inputs:
+                      action: 'deploy'
+                      connectionType: 'kubernetesServiceConnection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      manifests: '$(MON_PATH)/stack-monitoring.yaml'
+
+                  - task: KubernetesManifest@1
+                    displayName: 'Deploy Metricbeat'
+                    inputs:
+                      action: 'deploy'
+                      connectionType: 'kubernetesServiceConnection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      manifests: '$(MON_PATH)/metricbeat.yaml'
+
+                  - task: KubernetesManifest@1
+                    displayName: 'Deploy Filebeat'
+                    inputs:
+                      action: 'deploy'
+                      connectionType: 'kubernetesServiceConnection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      manifests: '$(MON_PATH)/filebeat.yaml'
+
+                  - task: Kubernetes@1
+                    displayName: 'Show monitoring endpoints'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'get'
+                      arguments: 'svc kibana-monitor-kb-http'
+
+  # ══════════════════════════════════════════════════════
+  # DESTROY
+  # ══════════════════════════════════════════════════════
+  - ${{ if eq(parameters.action, 'destroy') }}:
+    - stage: RemoveMonitoring
+      displayName: 'Remove Dedicated Monitoring'
+      jobs:
+        - deployment: remove
+          environment: 'eck-${{ parameters.environment }}-production'
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - checkout: self
+                  - task: Kubernetes@1
+                    displayName: 'Delete Beats'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'delete'
+                      arguments: 'beat filebeat metricbeat --ignore-not-found=true'
+
+                  - task: Kubernetes@1
+                    displayName: 'Delete ClusterRoles'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      command: 'delete'
+                      arguments: 'clusterrole metricbeat-cluster-role filebeat-cluster-role --ignore-not-found=true'
+
+                  - task: Kubernetes@1
+                    displayName: 'Delete ClusterRoleBindings'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      command: 'delete'
+                      arguments: 'clusterrolebinding metricbeat-cluster-role-binding filebeat-cluster-role-binding --ignore-not-found=true'
+
+                  - task: Kubernetes@1
+                    displayName: 'Delete kibana-monitor'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'delete'
+                      arguments: 'kibana kibana-monitor --ignore-not-found=true'
+
+                  - task: Kubernetes@1
+                    displayName: 'Delete es-monitor'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'delete'
+                      arguments: 'elasticsearch es-monitor --ignore-not-found=true'
+
+                  - task: Kubernetes@1
+                    displayName: 'Wait: es-monitor pods terminated'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'wait'
+                      arguments: '--for=delete pod -l elasticsearch.k8s.elastic.co/cluster-name=es-monitor --timeout=180s'
+                    continueOnError: true
+
+                  - task: Kubernetes@1
+                    displayName: 'Delete monitoring PVCs'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'delete'
+                      arguments: 'pvc -l elasticsearch.k8s.elastic.co/cluster-name=es-monitor --ignore-not-found=true'
+
+                  - task: Kubernetes@1
+                    displayName: 'Delete monitor secrets'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'delete'
+                      arguments: 'secret kibana-monitor-encryption-keys --ignore-not-found=true'

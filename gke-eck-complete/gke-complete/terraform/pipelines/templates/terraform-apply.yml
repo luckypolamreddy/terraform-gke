@@ -1,0 +1,17 @@
+# =============================================================================
+# Template: Terraform Apply (uses plan file from init-plan step)
+# =============================================================================
+parameters:
+  - name: workingDir
+    type: string
+
+steps:
+  - script: |
+      terraform apply -auto-approve -input=false -no-color tfplan
+    displayName: "Terraform Apply"
+    workingDirectory: "${{ parameters.workingDir }}"
+
+  - script: |
+      terraform output -no-color
+    displayName: "Show Outputs"
+    workingDirectory: "${{ parameters.workingDir }}"

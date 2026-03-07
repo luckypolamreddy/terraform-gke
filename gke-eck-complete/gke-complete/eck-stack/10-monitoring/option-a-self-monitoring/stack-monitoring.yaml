@@ -1,0 +1,65 @@
+###############################################################################
+# OPTION A — Self-Monitoring (same cluster monitors itself)
+#
+# USE WHEN: Single cluster, dev/staging, or cost-sensitive environments.
+#
+# HOW IT WORKS:
+#   ECK's built-in monitoring uses internal collectors that ship metrics
+#   directly to monitoring indices (.monitoring-*) on the SAME cluster.
+#   Kibana's Stack Monitoring reads from those indices.
+#
+# WHAT YOU GET in Kibana → Stack Monitoring:
+#   - Cluster overview (health, shards, docs, storage)
+#   - Node stats (JVM heap, CPU, disk, thread pools, circuit breakers)
+#   - Index-level stats (search rate, indexing rate, latency)
+#   - Shard allocation visualization
+#   - Logstash/Beats monitoring (if deployed)
+#
+# TRADEOFF:
+#   Monitoring indices consume resources on the same cluster.
+#   If the cluster is under severe stress, monitoring may also degrade.
+#   For production-critical workloads, use Option B instead.
+#
+# APPLY WITH:
+#   kubectl apply -f 10-monitoring/option-a-self-monitoring/
+###############################################################################
+
+# =========================================================================
+# 1. Patch Elasticsearch — enable self-monitoring collection
+# =========================================================================
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: elasticsearch
+  namespace: elastic-stack
+spec:
+  # This merges with the existing spec — ECK does strategic merge
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: elasticsearch          # Points to itself
+          namespace: elastic-stack
+    logs:
+      elasticsearchRefs:
+        - name: elasticsearch          # Logs also go to itself
+          namespace: elastic-stack
+
+---
+# =========================================================================
+# 2. Patch Kibana — enable self-monitoring collection
+# =========================================================================
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: kibana
+  namespace: elastic-stack
+spec:
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: elasticsearch
+          namespace: elastic-stack
+    logs:
+      elasticsearchRefs:
+        - name: elasticsearch
+          namespace: elastic-stack

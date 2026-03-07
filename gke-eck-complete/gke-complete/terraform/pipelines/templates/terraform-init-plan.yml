@@ -1,0 +1,59 @@
+# =============================================================================
+# Template: Terraform Init → Validate → Plan
+# =============================================================================
+parameters:
+  - name: workingDir
+    type: string
+  - name: stateBucket
+    type: string
+  - name: statePrefix
+    type: string
+  - name: varsFile
+    type: string
+  - name: extraVars
+    type: string
+    default: ""
+  - name: tfVersion
+    type: string
+    default: "1.9.0"
+
+steps:
+  - task: TerraformInstaller@1
+    displayName: "Install Terraform ${{ parameters.tfVersion }}"
+    inputs:
+      terraformVersion: "${{ parameters.tfVersion }}"
+
+  - script: |
+      echo '$(GCP_SA_KEY_JSON)' > $(Agent.TempDirectory)/gcp-key.json
+    displayName: "Write GCP credentials"
+    env:
+      GCP_SA_KEY_JSON: $(GCP_SA_KEY_JSON)
+
+  - script: |
+      terraform init \
+        -backend-config="bucket=${{ parameters.stateBucket }}" \
+        -backend-config="prefix=${{ parameters.statePrefix }}" \
+        -backend-config="credentials=$(Agent.TempDirectory)/gcp-key.json" \
+        -input=false -no-color
+    displayName: "Terraform Init"
+    workingDirectory: "${{ parameters.workingDir }}"
+
+  - script: |
+      terraform validate -no-color
+    displayName: "Terraform Validate"
+    workingDirectory: "${{ parameters.workingDir }}"
+
+  - script: |
+      terraform plan \
+        -var-file="${{ parameters.varsFile }}" \
+        -var="credentials=$(cat $(Agent.TempDirectory)/gcp-key.json)" \
+        ${{ parameters.extraVars }} \
+        -out=tfplan \
+        -input=false -no-color
+    displayName: "Terraform Plan"
+    workingDirectory: "${{ parameters.workingDir }}"
+
+  - script: |
+      terraform show -no-color tfplan
+    displayName: "Show Plan"
+    workingDirectory: "${{ parameters.workingDir }}"

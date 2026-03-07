@@ -1,0 +1,62 @@
+###############################################################################
+# Template: ECK Health Check
+#
+# Uses Kubernetes@1 ADO task with kubectl wait --for=jsonpath.
+# No bash loops. kubectl handles the polling natively.
+###############################################################################
+parameters:
+  - name: k8sConnection
+    type: string
+  - name: namespace
+    type: string
+    default: 'elastic-stack'
+  - name: checkElasticsearch
+    type: boolean
+    default: true
+  - name: checkKibana
+    type: boolean
+    default: false
+  - name: timeoutSeconds
+    type: number
+    default: 900
+
+steps:
+  - ${{ if parameters.checkElasticsearch }}:
+    - task: Kubernetes@1
+      displayName: 'Gate: Wait for ES green'
+      inputs:
+        connectionType: 'Kubernetes Service Connection'
+        kubernetesServiceConnection: '${{ parameters.k8sConnection }}'
+        namespace: '${{ parameters.namespace }}'
+        command: 'wait'
+        arguments: '--for=jsonpath={.status.health}=green elasticsearch/elasticsearch --timeout=${{ parameters.timeoutSeconds }}s'
+      timeoutInMinutes: 20
+
+    - task: Kubernetes@1
+      displayName: 'Gate: Verify ES nodes'
+      inputs:
+        connectionType: 'Kubernetes Service Connection'
+        kubernetesServiceConnection: '${{ parameters.k8sConnection }}'
+        namespace: '${{ parameters.namespace }}'
+        command: 'get'
+        arguments: 'elasticsearch elasticsearch -o jsonpath="Health={.status.health} Nodes={.status.availableNodes} Phase={.status.phase}"'
+
+  - ${{ if parameters.checkKibana }}:
+    - task: Kubernetes@1
+      displayName: 'Gate: Wait for Kibana green'
+      inputs:
+        connectionType: 'Kubernetes Service Connection'
+        kubernetesServiceConnection: '${{ parameters.k8sConnection }}'
+        namespace: '${{ parameters.namespace }}'
+        command: 'wait'
+        arguments: '--for=jsonpath={.status.health}=green kibana/kibana --timeout=${{ parameters.timeoutSeconds }}s'
+      timeoutInMinutes: 15
+
+  - task: Kubernetes@1
+    displayName: 'Gate: Pod status'
+    inputs:
+      connectionType: 'Kubernetes Service Connection'
+      kubernetesServiceConnection: '${{ parameters.k8sConnection }}'
+      namespace: '${{ parameters.namespace }}'
+      command: 'get'
+      arguments: 'pods -o wide'

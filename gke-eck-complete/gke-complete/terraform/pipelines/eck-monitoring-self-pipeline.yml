@@ -1,0 +1,107 @@
+###############################################################################
+# 7. ECK SELF-MONITORING — Stack monitors itself
+###############################################################################
+trigger: none
+
+parameters:
+  - name: environment
+    displayName: 'Environment'
+    type: string
+    default: 'dev'
+    values: [dev, staging, production]
+  - name: action
+    displayName: 'Action'
+    type: string
+    default: 'deploy'
+    values: [deploy, destroy]
+
+variables:
+  - group: 'eck-${{ parameters.environment }}-config'
+  - name: NS
+    value: 'elastic-stack'
+  - name: MON_PATH
+    value: '$(Build.SourcesDirectory)/eck-stack/10-monitoring/option-a-self-monitoring'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: Execute
+    displayName: '${{ parameters.action }} self-monitoring'
+    jobs:
+      - deployment: execute
+        environment: 'eck-${{ parameters.environment }}-production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - ${{ if eq(parameters.action, 'deploy') }}:
+                  - template: templates/eck-health-check.yml
+                    parameters:
+                      k8sConnection: '$(K8S_SERVICE_CONNECTION)'
+                      checkElasticsearch: true
+                      timeoutSeconds: 120
+
+                  - task: KubernetesManifest@1
+                    displayName: 'Deploy stack monitoring'
+                    inputs:
+                      action: 'deploy'
+                      connectionType: 'kubernetesServiceConnection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      manifests: '$(MON_PATH)/stack-monitoring.yaml'
+
+                  - task: KubernetesManifest@1
+                    displayName: 'Deploy Metricbeat'
+                    inputs:
+                      action: 'deploy'
+                      connectionType: 'kubernetesServiceConnection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      manifests: '$(MON_PATH)/metricbeat.yaml'
+
+                  - task: KubernetesManifest@1
+                    displayName: 'Deploy Filebeat'
+                    inputs:
+                      action: 'deploy'
+                      connectionType: 'kubernetesServiceConnection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      manifests: '$(MON_PATH)/filebeat.yaml'
+
+                  - task: Kubernetes@1
+                    displayName: 'Verify Beats pods'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'get'
+                      arguments: 'pods -l beat.k8s.elastic.co/name -o wide'
+
+                - ${{ if eq(parameters.action, 'destroy') }}:
+                  - task: Kubernetes@1
+                    displayName: 'Delete Beats'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'delete'
+                      arguments: 'beat filebeat metricbeat --ignore-not-found=true'
+
+                  - task: Kubernetes@1
+                    displayName: 'Delete Beats ClusterRoles'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      command: 'delete'
+                      arguments: 'clusterrole metricbeat-cluster-role filebeat-cluster-role --ignore-not-found=true'
+
+                  - task: Kubernetes@1
+                    displayName: 'Delete Beats ClusterRoleBindings'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      command: 'delete'
+                      arguments: 'clusterrolebinding metricbeat-cluster-role-binding filebeat-cluster-role-binding --ignore-not-found=true'

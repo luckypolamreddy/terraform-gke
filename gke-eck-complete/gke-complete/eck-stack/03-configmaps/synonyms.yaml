@@ -1,0 +1,71 @@
+###############################################################################
+# Synonyms — Mounted at /usr/share/elasticsearch/config/analysis/
+#
+# Usage in index mappings:
+#   analyzer: "text_with_synonyms"          (index-time)
+#   search_analyzer: "search_with_synonyms" (search-time, graph-aware)
+#
+# Hot-reload without restart:
+#   POST /<index>/_reload_search_analyzers
+###############################################################################
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-synonyms
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/part-of: elastic-stack
+data:
+  synonyms.txt: |
+    # === Technology ===
+    k8s, kubernetes
+    es, elasticsearch
+    aws, amazon web services
+    gcp, google cloud platform, google cloud
+    az, azure, microsoft azure
+    vm, virtual machine
+    lb, load balancer
+    cdn, content delivery network
+    dns, domain name system
+    ssl, tls, secure sockets layer, transport layer security
+    api, application programming interface
+    sdk, software development kit
+    ci, continuous integration
+    cd, continuous delivery, continuous deployment
+    ml, machine learning
+    ai, artificial intelligence
+    nlp, natural language processing
+    db, database
+    sql, structured query language
+    nosql, non-relational database
+
+    # === Business ===
+    roi, return on investment
+    kpi, key performance indicator
+    sla, service level agreement
+    eta, estimated time of arrival
+    poc, proof of concept
+    mvp, minimum viable product
+    b2b, business to business
+    b2c, business to consumer
+    crm, customer relationship management
+    erp, enterprise resource planning
+
+    # === ADD YOUR DOMAIN-SPECIFIC SYNONYMS BELOW ===
+    # product_x, product alias, product code
+
+  synonyms_graph.txt: |
+    # Graph-aware synonyms (handles multi-word terms correctly)
+    # Use with synonym_graph filter for search-time analysis
+    k8s, kubernetes
+    es, elasticsearch, elastic search
+    aws, amazon web services
+    gcp, google cloud, google cloud platform
+    ci cd, cicd, continuous integration and delivery
+    load balancer, lb
+    auto scaling, autoscaling, auto-scaling
+
+    # === ADD YOUR DOMAIN-SPECIFIC GRAPH SYNONYMS BELOW ===
+
+  stop_words.txt: |
+    # Custom stop words beyond default English set

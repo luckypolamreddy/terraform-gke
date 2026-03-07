@@ -1,0 +1,223 @@
+###############################################################################
+# OPTION A — Filebeat (Self-Monitoring)
+#
+# Deploys Filebeat via ECK Beat CRD as a DaemonSet:
+#   - Container logs from ALL pods (auto-discover via k8s metadata)
+#   - Elasticsearch slow logs (search + indexing)
+#   - Elasticsearch deprecation logs
+#   - Elasticsearch audit logs
+#   - Kibana logs
+#
+# Ships logs to the SAME Elasticsearch cluster.
+# Logs visible in Kibana → Observability → Logs / Discover.
+#
+# SCHEDULING:
+#   DaemonSet on ALL nodes — tolerates ES pool taints.
+###############################################################################
+apiVersion: beat.k8s.elastic.co/v1beta1
+kind: Beat
+metadata:
+  name: filebeat
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/part-of: elastic-stack
+    app.kubernetes.io/component: monitoring
+spec:
+  type: filebeat
+  version: 9.1.3
+  elasticsearchRef:
+    name: elasticsearch
+    namespace: elastic-stack
+  kibanaRef:
+    name: kibana
+    namespace: elastic-stack
+
+  config:
+    # ── Autodiscover: pick up all container logs with k8s metadata ──
+    filebeat.autodiscover:
+      providers:
+        - type: kubernetes
+          node: ${NODE_NAME}
+          hints.enabled: true
+          hints.default_config:
+            type: container
+            paths:
+              - /var/log/containers/*-${data.kubernetes.container.id}.log
+
+    # ── Elasticsearch log files (on ES data/master nodes) ──
+    filebeat.inputs:
+      # Slow query logs
+      - type: log
+        id: es-slowlog-search
+        paths:
+          - /var/log/containers/*elasticsearch-es-data*_elastic-stack_elasticsearch-*.log
+          - /var/log/containers/*elasticsearch-es-master*_elastic-stack_elasticsearch-*.log
+        include_lines: ['slowlog\.search']
+        fields:
+          log_type: es-slowlog-search
+        fields_under_root: true
+
+      # Slow indexing logs
+      - type: log
+        id: es-slowlog-index
+        paths:
+          - /var/log/containers/*elasticsearch-es-data*_elastic-stack_elasticsearch-*.log
+        include_lines: ['slowlog\.index']
+        fields:
+          log_type: es-slowlog-index
+        fields_under_root: true
+
+      # ES deprecation logs
+      - type: log
+        id: es-deprecation
+        paths:
+          - /var/log/containers/*elasticsearch-es-*_elastic-stack_elasticsearch-*.log
+        include_lines: ['deprecation']
+        fields:
+          log_type: es-deprecation
+        fields_under_root: true
+
+      # ES audit logs
+      - type: log
+        id: es-audit
+        paths:
+          - /var/log/containers/*elasticsearch-es-*_elastic-stack_elasticsearch-*.log
+        include_lines: ['audit']
+        fields:
+          log_type: es-audit
+        fields_under_root: true
+
+      # Kibana logs
+      - type: log
+        id: kibana-logs
+        paths:
+          - /var/log/containers/*kibana-kb-*_elastic-stack_kibana-*.log
+        fields:
+          log_type: kibana
+        fields_under_root: true
+
+    # ── Processors ──
+    processors:
+      - add_cloud_metadata: {}
+      - add_kubernetes_metadata:
+          host: ${NODE_NAME}
+          scope: node
+      - add_host_metadata: {}
+      # Drop noisy health-check logs
+      - drop_event:
+          when:
+            or:
+              - contains:
+                  message: "GET /_cluster/health"
+              - contains:
+                  message: "GET / HTTP"
+              - contains:
+                  message: "health check"
+
+    # ── Index Lifecycle ──
+    setup.ilm.enabled: true
+    setup.ilm.rollover_alias: "filebeat"
+    setup.ilm.pattern: "{now/d}-000001"
+    setup.ilm.policy_name: "filebeat"
+
+    # ── Dashboards ──
+    setup.dashboards.enabled: true
+
+    # ── Output (same cluster) ──
+    output.elasticsearch:
+      hosts: ["http://elasticsearch-es-http.elastic-stack.svc:9200"]
+      username: "${ES_USERNAME}"
+      password: "${ES_PASSWORD}"
+
+  daemonSet:
+    podTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/part-of: elastic-stack
+          app.kubernetes.io/component: filebeat
+      spec:
+        serviceAccountName: filebeat
+        automountServiceAccountToken: true
+        # Run on ALL nodes — including tainted ES pools
+        tolerations:
+          - key: "elastic.co/role"
+            operator: "Exists"
+            effect: "NoSchedule"
+        containers:
+          - name: filebeat
+            env:
+              - name: NODE_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: spec.nodeName
+              - name: ES_USERNAME
+                value: "elastic"
+              - name: ES_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: elasticsearch-es-elastic-user
+                    key: elastic
+            resources:
+              requests:
+                memory: 200Mi
+                cpu: 100m
+              limits:
+                memory: 400Mi
+                cpu: 200m
+            volumeMounts:
+              - name: varlogcontainers
+                mountPath: /var/log/containers
+                readOnly: true
+              - name: varlogpods
+                mountPath: /var/log/pods
+                readOnly: true
+              - name: varlibdockercontainers
+                mountPath: /var/lib/docker/containers
+                readOnly: true
+        volumes:
+          - name: varlogcontainers
+            hostPath:
+              path: /var/log/containers
+          - name: varlogpods
+            hostPath:
+              path: /var/log/pods
+          - name: varlibdockercontainers
+            hostPath:
+              path: /var/lib/docker/containers
+
+---
+###############################################################################
+# RBAC — Filebeat needs k8s API for autodiscover
+###############################################################################
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: filebeat
+  namespace: elastic-stack
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: filebeat-cluster-role
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "pods", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: filebeat-cluster-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: filebeat-cluster-role
+subjects:
+  - kind: ServiceAccount
+    name: filebeat
+    namespace: elastic-stack

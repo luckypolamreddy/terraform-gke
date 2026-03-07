@@ -1,0 +1,203 @@
+# =============================================================================
+# Backup Pipeline — GKE Backup Plan
+# Run AFTER cluster is deployed.
+#
+# Actions: plan, apply, pause, destroy
+# RUNTIME OVERRIDES: Parameters with "(override)" can change .tfvars values.
+# =============================================================================
+trigger: none
+
+parameters:
+  - name: gcpProject
+    displayName: "GCP Project"
+    type: string
+    values:
+      - project-a
+      - project-b
+
+  - name: clusterConfig
+    displayName: "Cluster Config (matches backup-<this>.tfvars)"
+    type: string
+    values:
+      - cluster-1
+      - cluster-2
+      - cluster-3
+
+  - name: action
+    displayName: "Action"
+    type: string
+    default: "plan"
+    values:
+      - plan
+      - apply
+      - pause
+      - destroy
+
+  # --- Runtime overrides (empty = use .tfvars value) ---
+  - name: backupPlanName
+    displayName: "Backup Plan Name (override)"
+    type: string
+    default: ""
+
+  - name: clusterName
+    displayName: "Cluster Name (override — must match deployed cluster)"
+    type: string
+    default: ""
+
+  - name: tfVersion
+    displayName: "Terraform Version"
+    type: string
+    default: "1.9.0"
+
+variables:
+  - group: "gcp-${{ parameters.gcpProject }}-credentials"
+  - name: stackDir
+    value: "$(System.DefaultWorkingDirectory)/stacks/backup"
+  - name: varsFile
+    value: "$(System.DefaultWorkingDirectory)/environments/${{ parameters.gcpProject }}/backup-${{ parameters.clusterConfig }}.tfvars"
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  # ===== PLAN =====
+  - stage: Plan
+    displayName: "Plan Backup — ${{ parameters.clusterConfig }}"
+    condition: eq('${{ parameters.action }}', 'plan')
+    jobs:
+      - job: Plan
+        steps:
+          - checkout: self
+
+          - script: |
+              VARS=""
+              [ -n "$BACKUP_NAME" ]   && VARS="$VARS -var=backup_plan_name=$BACKUP_NAME"
+              [ -n "$CLUSTER_NAME" ]  && VARS="$VARS -var=cluster_name=$CLUSTER_NAME"
+              echo "##vso[task.setvariable variable=EXTRA_TF_VARS]$VARS"
+              echo "Runtime overrides: ${VARS:-none}"
+            displayName: "Build override vars"
+            env:
+              BACKUP_NAME:  ${{ parameters.backupPlanName }}
+              CLUSTER_NAME: ${{ parameters.clusterName }}
+
+          - template: templates/terraform-init-plan.yml
+            parameters:
+              workingDir:  $(stackDir)
+              stateBucket: $(TF_STATE_BUCKET)
+              statePrefix: "backups/${{ parameters.clusterConfig }}"
+              varsFile:    $(varsFile)
+              extraVars:   $(EXTRA_TF_VARS)
+              tfVersion:   ${{ parameters.tfVersion }}
+
+  # ===== APPLY =====
+  - stage: Apply
+    displayName: "Apply Backup — ${{ parameters.clusterConfig }}"
+    condition: eq('${{ parameters.action }}', 'apply')
+    jobs:
+      - deployment: Apply
+        environment: "gcp-${{ parameters.gcpProject }}-backups"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - script: |
+                    VARS=""
+                    [ -n "$BACKUP_NAME" ]   && VARS="$VARS -var=backup_plan_name=$BACKUP_NAME"
+                    [ -n "$CLUSTER_NAME" ]  && VARS="$VARS -var=cluster_name=$CLUSTER_NAME"
+                    echo "##vso[task.setvariable variable=EXTRA_TF_VARS]$VARS"
+                  displayName: "Build override vars"
+                  env:
+                    BACKUP_NAME:  ${{ parameters.backupPlanName }}
+                    CLUSTER_NAME: ${{ parameters.clusterName }}
+
+                - template: templates/terraform-init-plan.yml
+                  parameters:
+                    workingDir:  $(stackDir)
+                    stateBucket: $(TF_STATE_BUCKET)
+                    statePrefix: "backups/${{ parameters.clusterConfig }}"
+                    varsFile:    $(varsFile)
+                    extraVars:   $(EXTRA_TF_VARS)
+                    tfVersion:   ${{ parameters.tfVersion }}
+
+                - template: templates/terraform-apply.yml
+                  parameters:
+                    workingDir: $(stackDir)
+
+  # ===== PAUSE =====
+  - stage: Pause
+    displayName: "Pause Backup — ${{ parameters.clusterConfig }}"
+    condition: eq('${{ parameters.action }}', 'pause')
+    jobs:
+      - deployment: Pause
+        environment: "gcp-${{ parameters.gcpProject }}-backups"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: TerraformInstaller@1
+                  inputs:
+                    terraformVersion: "${{ parameters.tfVersion }}"
+
+                - script: |
+                    echo '$(GCP_SA_KEY_JSON)' > $(Agent.TempDirectory)/gcp-key.json
+                  displayName: "Write credentials"
+                  env:
+                    GCP_SA_KEY_JSON: $(GCP_SA_KEY_JSON)
+
+                - script: |
+                    VARS="-var=paused=true"
+                    [ -n "$BACKUP_NAME" ]   && VARS="$VARS -var=backup_plan_name=$BACKUP_NAME"
+                    [ -n "$CLUSTER_NAME" ]  && VARS="$VARS -var=cluster_name=$CLUSTER_NAME"
+
+                    terraform init \
+                      -backend-config="bucket=$(TF_STATE_BUCKET)" \
+                      -backend-config="prefix=backups/${{ parameters.clusterConfig }}" \
+                      -backend-config="credentials=$(Agent.TempDirectory)/gcp-key.json" \
+                      -input=false -no-color
+
+                    terraform apply \
+                      -var-file="$(varsFile)" \
+                      -var="credentials=$(cat $(Agent.TempDirectory)/gcp-key.json)" \
+                      $VARS \
+                      -auto-approve -input=false -no-color
+                  displayName: "Terraform Apply — paused=true"
+                  workingDirectory: $(stackDir)
+                  env:
+                    BACKUP_NAME:  ${{ parameters.backupPlanName }}
+                    CLUSTER_NAME: ${{ parameters.clusterName }}
+
+  # ===== DESTROY (only after backups expired) =====
+  - stage: Destroy
+    displayName: "Destroy Backup Plan — ${{ parameters.clusterConfig }}"
+    condition: eq('${{ parameters.action }}', 'destroy')
+    jobs:
+      - deployment: Destroy
+        environment: "gcp-${{ parameters.gcpProject }}-destroy"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - script: |
+                    VARS=""
+                    [ -n "$BACKUP_NAME" ]   && VARS="$VARS -var=backup_plan_name=$BACKUP_NAME"
+                    [ -n "$CLUSTER_NAME" ]  && VARS="$VARS -var=cluster_name=$CLUSTER_NAME"
+                    echo "##vso[task.setvariable variable=EXTRA_TF_VARS]$VARS"
+                  displayName: "Build override vars"
+                  env:
+                    BACKUP_NAME:  ${{ parameters.backupPlanName }}
+                    CLUSTER_NAME: ${{ parameters.clusterName }}
+
+                - template: templates/terraform-destroy.yml
+                  parameters:
+                    workingDir:  $(stackDir)
+                    stateBucket: $(TF_STATE_BUCKET)
+                    statePrefix: "backups/${{ parameters.clusterConfig }}"
+                    varsFile:    $(varsFile)
+                    extraVars:   $(EXTRA_TF_VARS)
+                    tfVersion:   ${{ parameters.tfVersion }}

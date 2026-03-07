@@ -1,0 +1,38 @@
+###############################################################################
+# Template: JVM Heap Validation
+#
+# Uses ADO compile-time expressions — pipeline FAILS TO QUEUE if invalid.
+# No shell scripting. ADO evaluates these BEFORE the pipeline even starts.
+#
+# Rules:
+#   1. Heap ≤ 50% of container memory
+#   2. Heap ≤ 31g (compressed oops)
+###############################################################################
+parameters:
+  - name: memoryGi
+    type: number
+  - name: heapG
+    type: number
+
+steps:
+  # Rule 1: heap ≤ 50% of memory — ADO blocks pipeline at compile time
+  - ${{ if gt(parameters.heapG, div(parameters.memoryGi, 2)) }}:
+    - task: Bash@3
+      displayName: 'BLOCKED — JVM heap ${{ parameters.heapG }}g > 50% of ${{ parameters.memoryGi }}Gi'
+      inputs:
+        targetType: inline
+        script: |
+          echo "##vso[task.logissue type=error]JVM heap ${{ parameters.heapG }}g exceeds 50% of ${{ parameters.memoryGi }}Gi memory"
+          echo "Elastic rule: heap ≤ 50% — other 50% is for Lucene file cache"
+          exit 1
+
+  # Rule 2: heap ≤ 31g — ADO blocks pipeline at compile time
+  - ${{ if gt(parameters.heapG, 31) }}:
+    - task: Bash@3
+      displayName: 'BLOCKED — JVM heap ${{ parameters.heapG }}g > 31g compressed oops limit'
+      inputs:
+        targetType: inline
+        script: |
+          echo "##vso[task.logissue type=error]JVM heap ${{ parameters.heapG }}g exceeds 31g"
+          echo "Above 31g JVM disables compressed oops — wastes ~40% memory"
+          exit 1

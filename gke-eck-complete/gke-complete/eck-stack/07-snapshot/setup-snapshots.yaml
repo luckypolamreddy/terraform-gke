@@ -1,0 +1,148 @@
+###############################################################################
+# Register GCS Snapshot Repository + Create SLM Policy
+#
+# This single Job does both:
+#   1. Registers the GCS snapshot repository in Elasticsearch
+#   2. Creates a daily SLM policy with retention rules
+#   3. Triggers an immediate first snapshot to verify
+#
+# CHANGE: Set GCS_BUCKET to your Terraform-created bucket name
+###############################################################################
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: setup-snapshots
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/part-of: elastic-stack
+    app.kubernetes.io/component: snapshot-setup
+spec:
+  backoffLimit: 5
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: elastic-stack
+        app.kubernetes.io/component: snapshot-setup
+    spec:
+      serviceAccountName: eck-operations
+      restartPolicy: OnFailure
+      # No nodeSelector/tolerations → runs on system-pool
+
+      initContainers:
+        - name: wait-for-es
+          image: curlimages/curl:8.11.0
+          command:
+            - sh
+            - -c
+            - |
+              ES_URL="http://elasticsearch-es-http.elastic-stack.svc:9200"
+              ES_PASS=$(cat /mnt/elastic-user/elastic)
+              echo "Waiting for Elasticsearch green..."
+              until curl -s -u "elastic:${ES_PASS}" \
+                "${ES_URL}/_cluster/health?wait_for_status=green&timeout=30s" \
+                | grep -q '"status":"green"'; do
+                sleep 15
+              done
+              echo "Cluster is GREEN."
+          volumeMounts:
+            - name: elastic-user
+              mountPath: /mnt/elastic-user
+              readOnly: true
+
+      containers:
+        - name: setup
+          image: curlimages/curl:8.11.0
+          env:
+            - name: GCS_BUCKET
+              value: "proja-elastic-snapshots"       # CHANGE: your GCS bucket
+            - name: REPO_NAME
+              value: "gcs-snapshots"
+            - name: BASE_PATH
+              value: "elasticsearch-snapshots"
+            - name: SLM_POLICY
+              value: "daily-snapshots"
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              ES_URL="http://elasticsearch-es-http.elastic-stack.svc:9200"
+              ES_PASS=$(cat /mnt/elastic-user/elastic)
+              AUTH="-u elastic:${ES_PASS}"
+
+              # ── 1. Reload secure settings (ensure GCS creds available) ──
+              echo "[1/4] Reloading secure settings..."
+              curl -s $AUTH -X POST "${ES_URL}/_nodes/reload_secure_settings" \
+                -H "Content-Type: application/json" -d '{}' > /dev/null
+              sleep 5
+
+              # ── 2. Register GCS repository ──
+              echo "[2/4] Registering GCS snapshot repository..."
+              HTTP_CODE=$(curl -s -o /tmp/resp.json -w '%{http_code}' \
+                $AUTH -X PUT "${ES_URL}/_snapshot/${REPO_NAME}" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"type\": \"gcs\",
+                  \"settings\": {
+                    \"bucket\": \"${GCS_BUCKET}\",
+                    \"base_path\": \"${BASE_PATH}\",
+                    \"client\": \"default\",
+                    \"compress\": true,
+                    \"max_restore_bytes_per_sec\": \"500mb\",
+                    \"max_snapshot_bytes_per_sec\": \"500mb\",
+                    \"chunk_size\": \"100mb\"
+                  }
+                }")
+              cat /tmp/resp.json; echo ""
+              [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] || exit 1
+
+              # Verify
+              curl -s $AUTH -X POST "${ES_URL}/_snapshot/${REPO_NAME}/_verify" > /dev/null
+              echo "  Repository verified."
+
+              # ── 3. Create SLM policy ──
+              echo "[3/4] Creating SLM policy '${SLM_POLICY}'..."
+              HTTP_CODE=$(curl -s -o /tmp/resp.json -w '%{http_code}' \
+                $AUTH -X PUT "${ES_URL}/_slm/policy/${SLM_POLICY}" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "schedule": "0 30 2 * * ?",
+                  "name": "<daily-snap-{now/d}>",
+                  "repository": "'"${REPO_NAME}"'",
+                  "config": {
+                    "indices": ["*"],
+                    "ignore_unavailable": true,
+                    "include_global_state": true,
+                    "partial": false
+                  },
+                  "retention": {
+                    "expire_after": "30d",
+                    "min_count": 5,
+                    "max_count": 90
+                  }
+                }')
+              cat /tmp/resp.json; echo ""
+              [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] || exit 1
+
+              # ── 4. Trigger immediate first snapshot ──
+              echo "[4/4] Triggering first snapshot..."
+              curl -s $AUTH -X POST \
+                "${ES_URL}/_slm/policy/${SLM_POLICY}/_execute" \
+                -H "Content-Type: application/json"
+              echo ""
+
+              echo "=== DONE ==="
+              echo "  Repository: ${REPO_NAME} → gs://${GCS_BUCKET}/${BASE_PATH}/"
+              echo "  SLM Policy: ${SLM_POLICY} — daily at 02:30 UTC"
+              echo "  Retention:  30 days, min 5, max 90"
+
+          volumeMounts:
+            - name: elastic-user
+              mountPath: /mnt/elastic-user
+              readOnly: true
+
+      volumes:
+        - name: elastic-user
+          secret:
+            secretName: elasticsearch-es-elastic-user

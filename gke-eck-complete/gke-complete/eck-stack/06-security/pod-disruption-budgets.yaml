@@ -1,0 +1,43 @@
+###############################################################################
+# Pod Disruption Budgets
+###############################################################################
+
+# Masters: max 1 unavailable (maintain quorum)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: es-master-pdb
+  namespace: elastic-stack
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      elasticsearch.k8s.elastic.co/cluster-name: elasticsearch
+      elasticsearch.k8s.elastic.co/statefulset-name: elasticsearch-es-master
+
+---
+# Data: max 1 unavailable (prevent shard loss)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: es-data-pdb
+  namespace: elastic-stack
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      elasticsearch.k8s.elastic.co/cluster-name: elasticsearch
+      elasticsearch.k8s.elastic.co/statefulset-name: elasticsearch-es-data
+
+---
+# Kibana: keep at least 1 running
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kibana-pdb
+  namespace: elastic-stack
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      kibana.k8s.elastic.co/name: kibana

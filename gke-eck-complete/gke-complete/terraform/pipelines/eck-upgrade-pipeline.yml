@@ -1,0 +1,99 @@
+###############################################################################
+# 4. ECK UPGRADE — Rolling version upgrade
+###############################################################################
+trigger: none
+
+parameters:
+  - name: environment
+    displayName: 'Environment'
+    type: string
+    default: 'dev'
+    values: [dev, staging, production]
+  - name: newVersion
+    displayName: 'New Elastic Version'
+    type: string
+    default: '9.1.3'
+
+variables:
+  - group: 'eck-${{ parameters.environment }}-config'
+  - name: NS
+    value: 'elastic-stack'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: PreUpgrade
+    displayName: 'Pre-Upgrade'
+    jobs:
+      - deployment: pre
+        environment: 'eck-${{ parameters.environment }}-elasticsearch'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - template: templates/eck-health-check.yml
+                  parameters:
+                    k8sConnection: '$(K8S_SERVICE_CONNECTION)'
+                    checkElasticsearch: true
+                    checkKibana: true
+                    timeoutSeconds: 120
+                - task: Kubernetes@1
+                  displayName: 'Current version'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'get'
+                    arguments: 'elasticsearch elasticsearch -o jsonpath="Current={.spec.version} Target=${{ parameters.newVersion }}"'
+                # Shell: curl to ES API for snapshot
+                - script: |
+                    ES_PASS=$(kubectl -n $(NS) get secret elasticsearch-es-elastic-user -o jsonpath='{.data.elastic}' | base64 -d)
+                    SNAP="pre-upgrade-$(date +%Y%m%d-%H%M%S)"
+                    kubectl run snap-$RANDOM --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n $(NS) -- \
+                      curl -s -u "elastic:${ES_PASS}" -X PUT "http://elasticsearch-es-http.$(NS).svc:9200/_snapshot/gcs-snapshots/${SNAP}?wait_for_completion=true"
+                    echo "Snapshot '${SNAP}' complete"
+                  displayName: 'Pre-upgrade snapshot (shell: ES API)'
+
+  - stage: Upgrade
+    displayName: 'Upgrade → ${{ parameters.newVersion }}'
+    dependsOn: PreUpgrade
+    jobs:
+      - deployment: upgrade
+        environment: 'eck-${{ parameters.environment }}-elasticsearch'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: Kubernetes@1
+                  displayName: 'Patch ES version'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'patch'
+                    arguments: 'elasticsearch elasticsearch --type=merge -p {"spec":{"version":"${{ parameters.newVersion }}"}}'
+                - task: Kubernetes@1
+                  displayName: 'Patch Kibana version'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'patch'
+                    arguments: 'kibana kibana --type=merge -p {"spec":{"version":"${{ parameters.newVersion }}"}}'
+
+  - stage: Validate
+    displayName: 'Validate'
+    dependsOn: Upgrade
+    jobs:
+      - job: validate
+        steps:
+          - checkout: self
+          - template: templates/eck-health-check.yml
+            parameters:
+              k8sConnection: '$(K8S_SERVICE_CONNECTION)'
+              checkElasticsearch: true
+              checkKibana: true
+              timeoutSeconds: 1200

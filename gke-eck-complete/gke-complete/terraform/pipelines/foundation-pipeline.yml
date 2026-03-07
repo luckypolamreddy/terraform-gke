@@ -1,0 +1,117 @@
+# =============================================================================
+# Foundation Pipeline — VPC + GCS Bucket + Secret Manager
+# Run ONCE per project. These resources are NEVER destroyed with clusters.
+#
+# RUNTIME OVERRIDES: Parameters with "(override)" let you change values
+# from .tfvars at pipeline run time. Leave empty to use .tfvars defaults.
+# =============================================================================
+trigger: none
+
+parameters:
+  - name: gcpProject
+    displayName: "GCP Project"
+    type: string
+    values:
+      - project-a
+      - project-b
+
+  - name: action
+    displayName: "Action"
+    type: string
+    default: "plan"
+    values:
+      - plan
+      - apply
+
+  # --- Runtime overrides (empty = use .tfvars value) ---
+  - name: vpcName
+    displayName: "VPC Name (override)"
+    type: string
+    default: ""
+
+  - name: gcsBucketName
+    displayName: "GCS Bucket Name (override)"
+    type: string
+    default: ""
+
+  - name: tfVersion
+    displayName: "Terraform Version"
+    type: string
+    default: "1.9.0"
+
+variables:
+  - group: "gcp-${{ parameters.gcpProject }}-credentials"
+  - name: varsFile
+    value: "$(System.DefaultWorkingDirectory)/environments/${{ parameters.gcpProject }}/foundation.tfvars"
+  - name: stackDir
+    value: "$(System.DefaultWorkingDirectory)/stacks/foundation"
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  # ===== PLAN =====
+  - stage: Plan
+    displayName: "Plan — Foundation (${{ parameters.gcpProject }})"
+    jobs:
+      - job: Plan
+        steps:
+          - checkout: self
+
+          # Build -var flags from non-empty overrides
+          - script: |
+              VARS=""
+              [ -n "$VPC_NAME" ]    && VARS="$VARS -var=vpc_name=$VPC_NAME"
+              [ -n "$GCS_NAME" ]    && VARS="$VARS -var=gcs_name=$GCS_NAME"
+              echo "##vso[task.setvariable variable=EXTRA_TF_VARS]$VARS"
+              echo "Runtime overrides: ${VARS:-none}"
+            displayName: "Build override vars"
+            env:
+              VPC_NAME: ${{ parameters.vpcName }}
+              GCS_NAME: ${{ parameters.gcsBucketName }}
+
+          - template: templates/terraform-init-plan.yml
+            parameters:
+              workingDir:  $(stackDir)
+              stateBucket: $(TF_STATE_BUCKET)
+              statePrefix: "foundation"
+              varsFile:    $(varsFile)
+              extraVars:   $(EXTRA_TF_VARS)
+              tfVersion:   ${{ parameters.tfVersion }}
+
+  # ===== APPLY =====
+  - stage: Apply
+    displayName: "Apply — Foundation (${{ parameters.gcpProject }})"
+    dependsOn: Plan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'))
+    jobs:
+      - deployment: Apply
+        environment: "gcp-${{ parameters.gcpProject }}-foundation"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - script: |
+                    VARS=""
+                    [ -n "$VPC_NAME" ]    && VARS="$VARS -var=vpc_name=$VPC_NAME"
+                    [ -n "$GCS_NAME" ]    && VARS="$VARS -var=gcs_name=$GCS_NAME"
+                    echo "##vso[task.setvariable variable=EXTRA_TF_VARS]$VARS"
+                  displayName: "Build override vars"
+                  env:
+                    VPC_NAME: ${{ parameters.vpcName }}
+                    GCS_NAME: ${{ parameters.gcsBucketName }}
+
+                - template: templates/terraform-init-plan.yml
+                  parameters:
+                    workingDir:  $(stackDir)
+                    stateBucket: $(TF_STATE_BUCKET)
+                    statePrefix: "foundation"
+                    varsFile:    $(varsFile)
+                    extraVars:   $(EXTRA_TF_VARS)
+                    tfVersion:   ${{ parameters.tfVersion }}
+
+                - template: templates/terraform-apply.yml
+                  parameters:
+                    workingDir: $(stackDir)

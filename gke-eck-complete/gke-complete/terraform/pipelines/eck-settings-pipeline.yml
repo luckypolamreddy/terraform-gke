@@ -1,0 +1,190 @@
+###############################################################################
+# 6. ECK SETTINGS — Thread pools, circuit breakers, slow logs, SLM
+#
+# Thread pools: Kubernetes@1 patch (requires pod restart)
+# Circuit breakers, slow logs, index defaults, SLM: ES REST API
+#   (dynamic, no restart — shell required: no ADO task for ES API)
+###############################################################################
+trigger: none
+
+parameters:
+  - name: environment
+    displayName: 'Environment'
+    type: string
+    default: 'dev'
+    values: [dev, staging, production]
+  - name: action
+    displayName: 'What to change'
+    type: string
+    values:
+      - thread-pools
+      - circuit-breakers
+      - slow-log-thresholds
+      - index-defaults
+      - slm-schedule
+  # Thread pools
+  - name: writeQueueSize
+    displayName: '[thread-pools] Write Queue'
+    type: number
+    default: 1000
+  - name: searchQueueSize
+    displayName: '[thread-pools] Search Queue'
+    type: number
+    default: 1000
+  # Circuit breakers
+  - name: cbTotal
+    displayName: '[circuit-breakers] Total'
+    type: string
+    default: '95%'
+    values: ['85%', '90%', '95%']
+  - name: cbRequest
+    displayName: '[circuit-breakers] Request'
+    type: string
+    default: '60%'
+    values: ['40%', '50%', '60%', '70%']
+  - name: cbFielddata
+    displayName: '[circuit-breakers] Fielddata'
+    type: string
+    default: '40%'
+    values: ['20%', '30%', '40%', '50%']
+  # Slow logs
+  - name: slowSearchWarn
+    displayName: '[slow-logs] Search Warn'
+    type: string
+    default: '5s'
+    values: ['1s', '2s', '3s', '5s', '10s']
+  - name: slowSearchInfo
+    displayName: '[slow-logs] Search Info'
+    type: string
+    default: '2s'
+    values: ['500ms', '1s', '2s', '5s']
+  - name: slowIndexWarn
+    displayName: '[slow-logs] Index Warn'
+    type: string
+    default: '10s'
+    values: ['5s', '10s', '15s', '30s']
+  - name: slowIndexInfo
+    displayName: '[slow-logs] Index Info'
+    type: string
+    default: '5s'
+    values: ['2s', '5s', '10s']
+  # Index defaults
+  - name: indexReplicas
+    displayName: '[index-defaults] Replicas'
+    type: number
+    default: 1
+  - name: refreshInterval
+    displayName: '[index-defaults] Refresh'
+    type: string
+    default: '5s'
+    values: ['1s', '5s', '10s', '30s']
+  # SLM
+  - name: slmSchedule
+    displayName: '[slm] Cron'
+    type: string
+    default: '0 30 2 * * ?'
+  - name: slmRetentionDays
+    displayName: '[slm] Retention Days'
+    type: number
+    default: 30
+  - name: slmMinCount
+    displayName: '[slm] Min Snapshots'
+    type: number
+    default: 5
+  - name: slmMaxCount
+    displayName: '[slm] Max Snapshots'
+    type: number
+    default: 90
+
+variables:
+  - group: 'eck-${{ parameters.environment }}-config'
+  - name: NS
+    value: 'elastic-stack'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: Apply
+    displayName: '${{ parameters.action }}'
+    jobs:
+      - deployment: apply
+        environment: 'eck-${{ parameters.environment }}-production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                # ── Thread Pools: Kubernetes@1 patch (NOT shell) ──
+                - ${{ if eq(parameters.action, 'thread-pools') }}:
+                  - task: Kubernetes@1
+                    displayName: 'Patch thread pools: write=${{ parameters.writeQueueSize }}, search=${{ parameters.searchQueueSize }}'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'patch'
+                      arguments: >-
+                        elasticsearch elasticsearch --type=merge -p
+                        {"spec":{"nodeSets":[{"name":"data","config":{"thread_pool.write.queue_size":${{ parameters.writeQueueSize }},"thread_pool.search.queue_size":${{ parameters.searchQueueSize }}}}]}}
+
+                # ── Circuit Breakers: ES API (dynamic, shell required) ──
+                - ${{ if eq(parameters.action, 'circuit-breakers') }}:
+                  - script: |
+                      ES_PASS=$(kubectl -n $(NS) get secret elasticsearch-es-elastic-user -o jsonpath='{.data.elastic}' | base64 -d)
+                      kubectl run cb-$RANDOM --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n $(NS) -- \
+                        curl -s -u "elastic:${ES_PASS}" -X PUT \
+                        "http://elasticsearch-es-http.$(NS).svc:9200/_cluster/settings" \
+                        -H "Content-Type: application/json" -d '{
+                          "persistent":{
+                            "indices.breaker.total.limit":"${{ parameters.cbTotal }}",
+                            "indices.breaker.request.limit":"${{ parameters.cbRequest }}",
+                            "indices.breaker.fielddata.limit":"${{ parameters.cbFielddata }}"}}'
+                      echo "Applied dynamically — no restart"
+                    displayName: 'Update circuit breakers (shell: ES REST API, dynamic)'
+
+                # ── Slow Logs: ES API (dynamic, shell required) ──
+                - ${{ if eq(parameters.action, 'slow-log-thresholds') }}:
+                  - script: |
+                      ES_PASS=$(kubectl -n $(NS) get secret elasticsearch-es-elastic-user -o jsonpath='{.data.elastic}' | base64 -d)
+                      kubectl run sl-$RANDOM --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n $(NS) -- \
+                        curl -s -u "elastic:${ES_PASS}" -X PUT \
+                        "http://elasticsearch-es-http.$(NS).svc:9200/_component_template/slow-logs-settings" \
+                        -H "Content-Type: application/json" -d '{
+                          "template":{"settings":{
+                            "index.search.slowlog.threshold.query.warn":"${{ parameters.slowSearchWarn }}",
+                            "index.search.slowlog.threshold.query.info":"${{ parameters.slowSearchInfo }}",
+                            "index.indexing.slowlog.threshold.index.warn":"${{ parameters.slowIndexWarn }}",
+                            "index.indexing.slowlog.threshold.index.info":"${{ parameters.slowIndexInfo }}",
+                            "index.search.slowlog.level":"info","index.indexing.slowlog.level":"info"}}}'
+                      echo "Template updated — applies to new indices"
+                    displayName: 'Update slow logs (shell: ES REST API, dynamic)'
+
+                # ── Index Defaults: ES API (dynamic, shell required) ──
+                - ${{ if eq(parameters.action, 'index-defaults') }}:
+                  - script: |
+                      ES_PASS=$(kubectl -n $(NS) get secret elasticsearch-es-elastic-user -o jsonpath='{.data.elastic}' | base64 -d)
+                      kubectl run idx-$RANDOM --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n $(NS) -- \
+                        curl -s -u "elastic:${ES_PASS}" -X PUT \
+                        "http://elasticsearch-es-http.$(NS).svc:9200/_component_template/best-practice-defaults" \
+                        -H "Content-Type: application/json" -d '{
+                          "template":{"settings":{
+                            "index.number_of_replicas":${{ parameters.indexReplicas }},
+                            "index.refresh_interval":"${{ parameters.refreshInterval }}"}}}'
+                    displayName: 'Update index defaults (shell: ES REST API, dynamic)'
+
+                # ── SLM: ES API (dynamic, shell required) ──
+                - ${{ if eq(parameters.action, 'slm-schedule') }}:
+                  - script: |
+                      ES_PASS=$(kubectl -n $(NS) get secret elasticsearch-es-elastic-user -o jsonpath='{.data.elastic}' | base64 -d)
+                      kubectl run slm-$RANDOM --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n $(NS) -- \
+                        curl -s -u "elastic:${ES_PASS}" -X PUT \
+                        "http://elasticsearch-es-http.$(NS).svc:9200/_slm/policy/daily-snapshots" \
+                        -H "Content-Type: application/json" -d '{
+                          "schedule":"${{ parameters.slmSchedule }}",
+                          "name":"<daily-snap-{now/d}>",
+                          "repository":"gcs-snapshots",
+                          "config":{"indices":["*"],"include_global_state":true},
+                          "retention":{"expire_after":"${{ parameters.slmRetentionDays }}d","min_count":${{ parameters.slmMinCount }},"max_count":${{ parameters.slmMaxCount }}}}'
+                    displayName: 'Update SLM (shell: ES REST API, dynamic)'

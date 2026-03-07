@@ -1,0 +1,246 @@
+###############################################################################
+# Elasticsearch 9.1.3 — Production Cluster
+#
+# TOPOLOGY (matched to GKE node pools):
+# ┌───────────┬──────────┬───────────────────┬──────────────────────────────┐
+# │ Node Set  │ ES Pods  │ GKE Node Pool     │ Machine / Resources          │
+# ├───────────┼──────────┼───────────────────┼──────────────────────────────┤
+# │ master    │ 3        │ es-master-pool    │ e2-standard-2 (2 vCPU, 8GB) │
+# │           │          │                   │ Pod: 1 CPU / 4Gi / 2g heap  │
+# ├───────────┼──────────┼───────────────────┼──────────────────────────────┤
+# │ data      │ 3        │ es-data-pool      │ n2-highmem-4 (4 vCPU, 32GB) │
+# │           │          │                   │ Pod: 2 CPU / 28Gi / 14g heap│
+# │           │          │                   │ Roles: data + ingest         │
+# └───────────┴──────────┴───────────────────┴──────────────────────────────┘
+#
+# WHY THESE SIZES:
+#   Master heap 2g — Masters manage cluster state only, 2g is ample
+#   Data heap 14g  — 50% of 28Gi container, stays under 31g compressed oops
+#   Data 28Gi pod  — Leaves ~4GB on the 32GB node for kubelet + OS cache
+#   Data has ingest role — Eliminates need for separate ingest tier
+#
+# PINNING STRATEGY:
+#   nodeSelector  → only schedule on the right pool
+#   tolerations   → allow scheduling past the taint
+#   antiAffinity  → one pod per physical node (spread for HA)
+###############################################################################
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: elasticsearch
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/part-of: elastic-stack
+spec:
+  version: 9.1.3
+
+  # ── GCS credentials loaded into ES keystore for snapshot repo ──
+  secureSettings:
+    - secretName: gcs-credentials
+
+  # ── HTTP: External LoadBalancer, NO TLS ──
+  # TLS disabled on HTTP. Handle TLS at ingress controller level later.
+  # Inter-node transport TLS stays on (auto-managed by ECK, never touch it).
+  http:
+    service:
+      spec:
+        type: LoadBalancer
+    tls:
+      selfSignedCertificate:
+        disabled: true
+
+  # ── Transport: Auto-managed TLS ──
+  transport:
+    tls: {}
+
+  # ======================================================================
+  # NODE SETS
+  # ======================================================================
+  nodeSets:
+
+    # ================================================================
+    # MASTER NODES — 3 dedicated masters on es-master-pool
+    # ================================================================
+    - name: master
+      count: 3
+      config:
+        node.roles: ["master"]
+
+        # Cluster settings
+        cluster.routing.allocation.awareness.attributes: "k8s_node_name"
+
+        # Security
+        xpack.security.enabled: true
+        xpack.security.audit.enabled: true
+        xpack.security.audit.logfile.events.include:
+          - "access_denied"
+          - "access_granted"
+          - "anonymous_access_denied"
+          - "authentication_failed"
+          - "connection_denied"
+          - "tampered_request"
+          - "security_config_change"
+
+        # Discovery
+        cluster.initial_master_nodes:
+          - "elasticsearch-es-master-0"
+          - "elasticsearch-es-master-1"
+          - "elasticsearch-es-master-2"
+
+      podTemplate:
+        metadata:
+          labels:
+            elasticsearch.k8s.elastic.co/tier: master
+        spec:
+          # ── Init: set vm.max_map_count ──
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+
+          containers:
+            - name: elasticsearch
+              resources:
+                # Fits on e2-standard-2 (8GB allocatable ~7.5GB)
+                requests:
+                  memory: 4Gi
+                  cpu: "1"
+                limits:
+                  memory: 4Gi
+                  cpu: "2"
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms2g -Xmx2g"    # 50% of 4Gi container
+
+          # ── Pin to es-master-pool ──
+          nodeSelector:
+            elastic.co/role: "master"
+          tolerations:
+            - key: "elastic.co/role"
+              value: "master"
+              effect: "NoSchedule"
+
+          # ── Anti-affinity: 1 master per GKE node ──
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/cluster-name: elasticsearch
+                      elasticsearch.k8s.elastic.co/statefulset-name: elasticsearch-es-master
+                  topologyKey: kubernetes.io/hostname
+
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: premium-rwo
+            resources:
+              requests:
+                storage: 20Gi    # Masters need minimal storage
+
+    # ================================================================
+    # DATA NODES — 3 data+ingest nodes on es-data-pool
+    # ================================================================
+    - name: data
+      count: 3
+      config:
+        # Roles: data + ingest (no separate ingest tier needed)
+        node.roles: ["data", "data_content", "data_hot", "ingest", "transform"]
+
+        # Shard allocation awareness
+        cluster.routing.allocation.awareness.attributes: "k8s_node_name"
+
+        # Thread pools (tuned for data-heavy workloads)
+        thread_pool.write.queue_size: 1000
+        thread_pool.search.queue_size: 1000
+
+        # Circuit breakers
+        indices.breaker.total.use_real_memory: true
+        indices.breaker.total.limit: "95%"
+        indices.breaker.request.limit: "60%"
+        indices.breaker.fielddata.limit: "40%"
+
+        # Indexing performance
+        indices.memory.index_buffer_size: "15%"
+        indices.queries.cache.size: "15%"
+
+        # Recovery speed
+        indices.recovery.max_bytes_per_sec: "500mb"
+
+        # GCS client settings
+        gcs.client.default.connect_timeout: "30s"
+        gcs.client.default.read_timeout: "30s"
+
+        # Script compilation rate (for ingest pipelines)
+        script.max_compilations_rate: "150/5m"
+
+      podTemplate:
+        metadata:
+          labels:
+            elasticsearch.k8s.elastic.co/tier: data
+        spec:
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+
+          containers:
+            - name: elasticsearch
+              resources:
+                # Fits on n2-highmem-4 (32GB allocatable ~30GB)
+                # 28Gi for ES, ~2-4GB for kubelet/OS = perfect fit
+                requests:
+                  memory: 28Gi
+                  cpu: "2"
+                limits:
+                  memory: 28Gi
+                  cpu: "4"
+              env:
+                - name: ES_JAVA_OPTS
+                  # 14g = 50% of 28Gi container
+                  # Under 31g → compressed oops active → efficient GC
+                  # Remaining 14Gi → OS file cache for Lucene reads
+                  value: "-Xms14g -Xmx14g"
+              volumeMounts:
+                - name: synonyms
+                  mountPath: /usr/share/elasticsearch/config/analysis
+                  readOnly: true
+
+          volumes:
+            - name: synonyms
+              configMap:
+                name: elasticsearch-synonyms
+
+          # ── Pin to es-data-pool ──
+          nodeSelector:
+            elastic.co/role: "data"
+          tolerations:
+            - key: "elastic.co/role"
+              value: "data"
+              effect: "NoSchedule"
+
+          # ── Anti-affinity: 1 data pod per GKE node ──
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/cluster-name: elasticsearch
+                      elasticsearch.k8s.elastic.co/statefulset-name: elasticsearch-es-data
+                  topologyKey: kubernetes.io/hostname
+
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: premium-rwo    # SSD-backed (pd-ssd)
+            resources:
+              requests:
+                storage: 500Gi

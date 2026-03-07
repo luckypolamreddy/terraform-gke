@@ -1,0 +1,144 @@
+###############################################################################
+# 5. ECK OPERATIONS — Synonyms, password rotation, snapshots, reapply
+###############################################################################
+trigger: none
+
+parameters:
+  - name: environment
+    displayName: 'Environment'
+    type: string
+    default: 'dev'
+    values: [dev, staging, production]
+  - name: action
+    displayName: 'Action'
+    type: string
+    values:
+      - update-synonyms
+      - rotate-password
+      - manual-snapshot
+      - reapply-manifests
+
+variables:
+  - group: 'eck-${{ parameters.environment }}-config'
+  - name: NS
+    value: 'elastic-stack'
+  - name: ECK_PATH
+    value: '$(Build.SourcesDirectory)/eck-stack'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: Execute
+    displayName: '${{ parameters.action }}'
+    jobs:
+      - deployment: execute
+        environment: 'eck-${{ parameters.environment }}-production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                # ── Update Synonyms ──
+                - ${{ if eq(parameters.action, 'update-synonyms') }}:
+                  - task: KubernetesManifest@1
+                    displayName: 'Apply synonyms ConfigMap'
+                    inputs:
+                      action: 'deploy'
+                      connectionType: 'kubernetesServiceConnection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      manifests: '$(ECK_PATH)/03-configmaps/synonyms.yaml'
+                  # Shell: sleep + curl to reload analyzers — no ADO task
+                  - script: |
+                      echo "Waiting 90s for ConfigMap volume propagation..."
+                      sleep 90
+                      ES_PASS=$(kubectl -n $(NS) get secret elasticsearch-es-elastic-user -o jsonpath='{.data.elastic}' | base64 -d)
+                      ES_URL="http://elasticsearch-es-http.$(NS).svc:9200"
+                      INDICES=$(kubectl run idx-$RANDOM --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n $(NS) -- \
+                        curl -s -u "elastic:${ES_PASS}" "${ES_URL}/_cat/indices?h=index" | grep -v '^\.' | tr '\n' ' ')
+                      for IDX in $INDICES; do
+                        kubectl run rl-$RANDOM --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n $(NS) -- \
+                          curl -s -u "elastic:${ES_PASS}" -X POST "${ES_URL}/${IDX}/_reload_search_analyzers" 2>/dev/null \
+                          && echo "  Reloaded: ${IDX}" || true
+                      done
+                    displayName: 'Reload analyzers (shell: ES API)'
+
+                # ── Rotate Password ──
+                - ${{ if eq(parameters.action, 'rotate-password') }}:
+                  - task: Kubernetes@1
+                    displayName: 'Delete elastic-user secret'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'delete'
+                      arguments: 'secret elasticsearch-es-elastic-user'
+                  # Shell: sleep for ECK to regenerate
+                  - script: |
+                      echo "Waiting 30s for ECK to regenerate password..."
+                      sleep 30
+                    displayName: 'Wait for regeneration'
+                  - task: Kubernetes@1
+                    displayName: 'Verify new secret exists'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'get'
+                      arguments: 'secret elasticsearch-es-elastic-user'
+                  - task: Kubernetes@1
+                    displayName: 'Cleanup old sync job'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'delete'
+                      arguments: 'job sync-kibana-creds --ignore-not-found=true'
+                  - task: KubernetesManifest@1
+                    displayName: 'Deploy creds sync job'
+                    inputs:
+                      action: 'deploy'
+                      connectionType: 'kubernetesServiceConnection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      manifests: '$(ECK_PATH)/08-creds-sync/sync-to-secret-manager.yaml'
+                  - task: Kubernetes@1
+                    displayName: 'Wait: creds sync'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'wait'
+                      arguments: '--for=condition=complete job/sync-kibana-creds --timeout=120s'
+
+                # ── Manual Snapshot ──
+                - ${{ if eq(parameters.action, 'manual-snapshot') }}:
+                  # Shell: curl to ES API — no ADO task for ES snapshots
+                  - script: |
+                      ES_PASS=$(kubectl -n $(NS) get secret elasticsearch-es-elastic-user -o jsonpath='{.data.elastic}' | base64 -d)
+                      SNAP="manual-$(date +%Y%m%d-%H%M%S)"
+                      kubectl run snap-$RANDOM --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n $(NS) -- \
+                        curl -s -u "elastic:${ES_PASS}" -X PUT \
+                        "http://elasticsearch-es-http.$(NS).svc:9200/_snapshot/gcs-snapshots/${SNAP}?wait_for_completion=true"
+                      echo "Snapshot '${SNAP}' complete"
+                    displayName: 'Take snapshot (shell: ES API)'
+
+                # ── Reapply Manifests ──
+                - ${{ if eq(parameters.action, 'reapply-manifests') }}:
+                  - task: KubernetesManifest@1
+                    displayName: 'Deploy all manifests'
+                    inputs:
+                      action: 'deploy'
+                      connectionType: 'kubernetesServiceConnection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      manifests: |
+                        $(ECK_PATH)/00-namespace.yaml
+                        $(ECK_PATH)/03-configmaps/synonyms.yaml
+                        $(ECK_PATH)/06-security/rbac.yaml
+                        $(ECK_PATH)/06-security/network-policies.yaml
+                        $(ECK_PATH)/06-security/pod-disruption-budgets.yaml
+                        $(ECK_PATH)/04-elasticsearch/elasticsearch.yaml
+                        $(ECK_PATH)/05-kibana/kibana.yaml

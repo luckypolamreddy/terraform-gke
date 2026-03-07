@@ -1,0 +1,141 @@
+###############################################################################
+# Index Defaults: Slow Logs + Synonym Analyzers + Best Practices
+#
+# Creates component templates and a composable index template applied to all
+# new indices at priority 0 (app-specific templates take precedence).
+###############################################################################
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: setup-index-defaults
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/part-of: elastic-stack
+    app.kubernetes.io/component: index-setup
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: elastic-stack
+        app.kubernetes.io/component: index-setup
+    spec:
+      serviceAccountName: eck-operations
+      restartPolicy: OnFailure
+
+      initContainers:
+        - name: wait-for-es
+          image: curlimages/curl:8.11.0
+          command: ["sh", "-c", "ES_PASS=$(cat /mnt/elastic-user/elastic); until curl -s -u elastic:${ES_PASS} http://elasticsearch-es-http.elastic-stack.svc:9200/_cluster/health | grep -q '\"status\":\"green\"'; do sleep 10; done"]
+          volumeMounts:
+            - { name: elastic-user, mountPath: /mnt/elastic-user, readOnly: true }
+
+      containers:
+        - name: setup
+          image: curlimages/curl:8.11.0
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              ES="http://elasticsearch-es-http.elastic-stack.svc:9200"
+              P=$(cat /mnt/elastic-user/elastic)
+              A="-u elastic:${P}"
+
+              # ── 1. Slow logs component template ──
+              echo "[1/4] Slow logs..."
+              curl -s $A -X PUT "${ES}/_component_template/slow-logs-settings" \
+                -H "Content-Type: application/json" -d '{
+                "template": { "settings": {
+                  "index.search.slowlog.threshold.query.warn": "5s",
+                  "index.search.slowlog.threshold.query.info": "2s",
+                  "index.search.slowlog.threshold.query.debug": "500ms",
+                  "index.search.slowlog.threshold.query.trace": "200ms",
+                  "index.search.slowlog.threshold.fetch.warn": "1s",
+                  "index.search.slowlog.threshold.fetch.info": "500ms",
+                  "index.search.slowlog.threshold.fetch.debug": "200ms",
+                  "index.search.slowlog.threshold.fetch.trace": "100ms",
+                  "index.indexing.slowlog.threshold.index.warn": "10s",
+                  "index.indexing.slowlog.threshold.index.info": "5s",
+                  "index.indexing.slowlog.threshold.index.debug": "2s",
+                  "index.indexing.slowlog.threshold.index.trace": "500ms",
+                  "index.search.slowlog.level": "info",
+                  "index.indexing.slowlog.level": "info",
+                  "index.indexing.slowlog.source": "1000"
+                }}}'
+              echo ""
+
+              # ── 2. Synonym analyzer component template ──
+              echo "[2/4] Synonym analyzers..."
+              curl -s $A -X PUT "${ES}/_component_template/synonym-analyzer-settings" \
+                -H "Content-Type: application/json" -d '{
+                "template": { "settings": { "analysis": {
+                  "filter": {
+                    "synonym_filter": {
+                      "type": "synonym",
+                      "synonyms_path": "analysis/synonyms.txt",
+                      "updateable": true
+                    },
+                    "synonym_graph_filter": {
+                      "type": "synonym_graph",
+                      "synonyms_path": "analysis/synonyms_graph.txt",
+                      "updateable": true
+                    }
+                  },
+                  "analyzer": {
+                    "text_with_synonyms": {
+                      "type": "custom", "tokenizer": "standard",
+                      "filter": ["lowercase", "synonym_filter"]
+                    },
+                    "search_with_synonyms": {
+                      "type": "custom", "tokenizer": "standard",
+                      "filter": ["lowercase", "synonym_graph_filter"]
+                    }
+                  }
+                }}}}'
+              echo ""
+
+              # ── 3. Best-practice defaults ──
+              echo "[3/4] Best practice defaults..."
+              curl -s $A -X PUT "${ES}/_component_template/best-practice-defaults" \
+                -H "Content-Type: application/json" -d '{
+                "template": { "settings": {
+                  "index.number_of_replicas": 1,
+                  "index.refresh_interval": "5s",
+                  "index.translog.durability": "request",
+                  "index.translog.sync_interval": "5s",
+                  "index.merge.scheduler.max_thread_count": 1,
+                  "index.unassigned.node_left.delayed_timeout": "5m",
+                  "index.mapping.total_fields.limit": 2000
+                }}}'
+              echo ""
+
+              # ── 4. Composable index template ──
+              echo "[4/4] Composable index template..."
+              curl -s $A -X PUT "${ES}/_index_template/default-production-template" \
+                -H "Content-Type: application/json" -d '{
+                "index_patterns": ["*"],
+                "priority": 0,
+                "composed_of": [
+                  "slow-logs-settings",
+                  "synonym-analyzer-settings",
+                  "best-practice-defaults"
+                ],
+                "template": { "settings": {} },
+                "_meta": { "description": "Default: slow logs + synonyms + best practices. Priority 0." }
+              }'
+              echo ""
+
+              echo "=== Index defaults configured ==="
+              echo "  Slow logs:  query warn=5s, fetch warn=1s, index warn=10s"
+              echo "  Analyzers:  text_with_synonyms, search_with_synonyms"
+              echo "  Synonyms:   POST /<index>/_reload_search_analyzers"
+
+          volumeMounts:
+            - { name: elastic-user, mountPath: /mnt/elastic-user, readOnly: true }
+
+      volumes:
+        - name: elastic-user
+          secret:
+            secretName: elasticsearch-es-elastic-user

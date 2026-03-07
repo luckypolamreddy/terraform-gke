@@ -1,0 +1,260 @@
+###############################################################################
+# 3. ECK RESOURCES — Scale, CPU, Memory, JVM, Storage
+#
+# JVM validation is compile-time via ADO expressions (pipeline won't queue
+# if heap > 50% of memory or heap > 31g).
+###############################################################################
+trigger: none
+
+parameters:
+  - name: environment
+    displayName: 'Environment'
+    type: string
+    default: 'dev'
+    values: [dev, staging, production]
+  - name: action
+    displayName: 'What to change'
+    type: string
+    values:
+      - scale-data-nodes
+      - scale-kibana
+      - es-master-cpu-memory-jvm
+      - es-data-cpu-memory-jvm
+      - es-data-storage
+      - kibana-cpu-memory
+  - name: dryRun
+    displayName: 'Dry Run'
+    type: boolean
+    default: false
+
+  # Scale
+  - name: dataNodeCount
+    displayName: '[scale-data-nodes] Count'
+    type: number
+    default: 3
+  - name: kibanaCount
+    displayName: '[scale-kibana] Count'
+    type: number
+    default: 2
+
+  # Master (numbers for ADO expression validation)
+  - name: masterCpuReq
+    displayName: '[es-master] CPU Request'
+    type: string
+    default: '1'
+  - name: masterCpuLim
+    displayName: '[es-master] CPU Limit'
+    type: string
+    default: '2'
+  - name: masterMemoryGi
+    displayName: '[es-master] Memory (Gi)'
+    type: number
+    default: 4
+    values: [2, 4, 6, 8]
+  - name: masterHeapG
+    displayName: '[es-master] JVM Heap (g)'
+    type: number
+    default: 2
+    values: [1, 2, 3, 4]
+
+  # Data (numbers for ADO expression validation)
+  - name: dataCpuReq
+    displayName: '[es-data] CPU Request'
+    type: string
+    default: '2'
+  - name: dataCpuLim
+    displayName: '[es-data] CPU Limit'
+    type: string
+    default: '4'
+  - name: dataMemoryGi
+    displayName: '[es-data] Memory (Gi)'
+    type: number
+    default: 28
+    values: [16, 24, 28, 32, 48, 56, 62]
+  - name: dataHeapG
+    displayName: '[es-data] JVM Heap (g) — ≤50% memory, max 31'
+    type: number
+    default: 14
+    values: [8, 12, 14, 16, 24, 28, 31]
+  - name: dataStorageGi
+    displayName: '[es-data-storage] Size (Gi) — can only INCREASE'
+    type: number
+    default: 500
+    values: [500, 750, 1000, 1500, 2000]
+
+  # Kibana
+  - name: kibanaCpuReq
+    displayName: '[kibana] CPU Request'
+    type: string
+    default: '0.5'
+  - name: kibanaCpuLim
+    displayName: '[kibana] CPU Limit'
+    type: string
+    default: '1'
+  - name: kibanaMemoryGi
+    displayName: '[kibana] Memory (Gi)'
+    type: number
+    default: 2
+    values: [1, 2, 4]
+
+variables:
+  - group: 'eck-${{ parameters.environment }}-config'
+  - name: NS
+    value: 'elastic-stack'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: Validate
+    displayName: 'Validate'
+    jobs:
+      - deployment: validate
+        environment: 'eck-${{ parameters.environment }}-elasticsearch'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                # Compile-time JVM validation for master
+                - ${{ if eq(parameters.action, 'es-master-cpu-memory-jvm') }}:
+                  - template: templates/eck-validate-jvm.yml
+                    parameters:
+                      memoryGi: ${{ parameters.masterMemoryGi }}
+                      heapG: ${{ parameters.masterHeapG }}
+
+                # Compile-time JVM validation for data
+                - ${{ if eq(parameters.action, 'es-data-cpu-memory-jvm') }}:
+                  - template: templates/eck-validate-jvm.yml
+                    parameters:
+                      memoryGi: ${{ parameters.dataMemoryGi }}
+                      heapG: ${{ parameters.dataHeapG }}
+
+                # Pre-check: current state
+                - task: Kubernetes@1
+                  displayName: 'Current ES spec'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'get'
+                    arguments: 'elasticsearch elasticsearch -o yaml'
+
+                - template: templates/eck-health-check.yml
+                  parameters:
+                    k8sConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    checkElasticsearch: true
+                    checkKibana: true
+                    timeoutSeconds: 120
+
+  - stage: Apply
+    displayName: 'Apply: ${{ parameters.action }}'
+    dependsOn: Validate
+    jobs:
+      - deployment: apply
+        environment: 'eck-${{ parameters.environment }}-elasticsearch'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                # ── Scale Data ──
+                - ${{ if eq(parameters.action, 'scale-data-nodes') }}:
+                  - task: Kubernetes@1
+                    displayName: 'Patch data count → ${{ parameters.dataNodeCount }}'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'patch'
+                      arguments: 'elasticsearch elasticsearch --type=json -p [{"op":"replace","path":"/spec/nodeSets/1/count","value":${{ parameters.dataNodeCount }}}]'
+
+                # ── Scale Kibana ──
+                - ${{ if eq(parameters.action, 'scale-kibana') }}:
+                  - task: Kubernetes@1
+                    displayName: 'Patch Kibana count → ${{ parameters.kibanaCount }}'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'patch'
+                      arguments: 'kibana kibana --type=json -p [{"op":"replace","path":"/spec/count","value":${{ parameters.kibanaCount }}}]'
+
+                # ── Master Resources ──
+                - ${{ if eq(parameters.action, 'es-master-cpu-memory-jvm') }}:
+                  - task: Kubernetes@1
+                    displayName: 'Patch master: CPU=${{ parameters.masterCpuReq }}/${{ parameters.masterCpuLim }}, Mem=${{ parameters.masterMemoryGi }}Gi, Heap=${{ parameters.masterHeapG }}g'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'patch'
+                      arguments: >-
+                        elasticsearch elasticsearch --type=json -p
+                        [{"op":"replace","path":"/spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/cpu","value":"${{ parameters.masterCpuReq }}"},
+                        {"op":"replace","path":"/spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/cpu","value":"${{ parameters.masterCpuLim }}"},
+                        {"op":"replace","path":"/spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory","value":"${{ parameters.masterMemoryGi }}Gi"},
+                        {"op":"replace","path":"/spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/memory","value":"${{ parameters.masterMemoryGi }}Gi"},
+                        {"op":"replace","path":"/spec/nodeSets/0/podTemplate/spec/containers/0/env/0/value","value":"-Xms${{ parameters.masterHeapG }}g -Xmx${{ parameters.masterHeapG }}g"}]
+
+                # ── Data Resources ──
+                - ${{ if eq(parameters.action, 'es-data-cpu-memory-jvm') }}:
+                  - task: Kubernetes@1
+                    displayName: 'Patch data: CPU=${{ parameters.dataCpuReq }}/${{ parameters.dataCpuLim }}, Mem=${{ parameters.dataMemoryGi }}Gi, Heap=${{ parameters.dataHeapG }}g'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'patch'
+                      arguments: >-
+                        elasticsearch elasticsearch --type=json -p
+                        [{"op":"replace","path":"/spec/nodeSets/1/podTemplate/spec/containers/0/resources/requests/cpu","value":"${{ parameters.dataCpuReq }}"},
+                        {"op":"replace","path":"/spec/nodeSets/1/podTemplate/spec/containers/0/resources/limits/cpu","value":"${{ parameters.dataCpuLim }}"},
+                        {"op":"replace","path":"/spec/nodeSets/1/podTemplate/spec/containers/0/resources/requests/memory","value":"${{ parameters.dataMemoryGi }}Gi"},
+                        {"op":"replace","path":"/spec/nodeSets/1/podTemplate/spec/containers/0/resources/limits/memory","value":"${{ parameters.dataMemoryGi }}Gi"},
+                        {"op":"replace","path":"/spec/nodeSets/1/podTemplate/spec/containers/0/env/0/value","value":"-Xms${{ parameters.dataHeapG }}g -Xmx${{ parameters.dataHeapG }}g"}]
+
+                # ── Data Storage ──
+                - ${{ if eq(parameters.action, 'es-data-storage') }}:
+                  - task: Kubernetes@1
+                    displayName: 'Patch data storage → ${{ parameters.dataStorageGi }}Gi'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'patch'
+                      arguments: 'elasticsearch elasticsearch --type=json -p [{"op":"replace","path":"/spec/nodeSets/1/volumeClaimTemplates/0/spec/resources/requests/storage","value":"${{ parameters.dataStorageGi }}Gi"}]'
+
+                # ── Kibana Resources ──
+                - ${{ if eq(parameters.action, 'kibana-cpu-memory') }}:
+                  - task: Kubernetes@1
+                    displayName: 'Patch Kibana: CPU=${{ parameters.kibanaCpuReq }}/${{ parameters.kibanaCpuLim }}, Mem=${{ parameters.kibanaMemoryGi }}Gi'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'patch'
+                      arguments: >-
+                        kibana kibana --type=json -p
+                        [{"op":"replace","path":"/spec/podTemplate/spec/containers/0/resources/requests/cpu","value":"${{ parameters.kibanaCpuReq }}"},
+                        {"op":"replace","path":"/spec/podTemplate/spec/containers/0/resources/limits/cpu","value":"${{ parameters.kibanaCpuLim }}"},
+                        {"op":"replace","path":"/spec/podTemplate/spec/containers/0/resources/requests/memory","value":"${{ parameters.kibanaMemoryGi }}Gi"},
+                        {"op":"replace","path":"/spec/podTemplate/spec/containers/0/resources/limits/memory","value":"${{ parameters.kibanaMemoryGi }}Gi"}]
+
+  - stage: PostValidate
+    displayName: 'Post-Validate'
+    dependsOn: Apply
+    jobs:
+      - job: validate
+        steps:
+          - checkout: self
+          - template: templates/eck-health-check.yml
+            parameters:
+              k8sConnection: '$(K8S_SERVICE_CONNECTION)'
+              namespace: '$(NS)'
+              checkElasticsearch: true
+              checkKibana: true
+              timeoutSeconds: 900

@@ -1,0 +1,89 @@
+###############################################################################
+# Network Policies — Default deny + explicit allows
+###############################################################################
+
+# Default deny all ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: elastic-stack
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+
+---
+# ES Transport (9300): ES ↔ ES only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-es-transport
+  namespace: elastic-stack
+spec:
+  podSelector:
+    matchLabels:
+      elasticsearch.k8s.elastic.co/cluster-name: elasticsearch
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              elasticsearch.k8s.elastic.co/cluster-name: elasticsearch
+      ports:
+        - { protocol: TCP, port: 9300 }
+
+---
+# ES HTTP (9200): From Kibana, Jobs, and LoadBalancer
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-es-http
+  namespace: elastic-stack
+spec:
+  podSelector:
+    matchLabels:
+      elasticsearch.k8s.elastic.co/cluster-name: elasticsearch
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              kibana.k8s.elastic.co/name: kibana
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: elastic-stack
+      ports:
+        - { protocol: TCP, port: 9200 }
+    - from: []    # LoadBalancer
+      ports:
+        - { protocol: TCP, port: 9200 }
+
+---
+# Kibana HTTP (5601): From LoadBalancer
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kibana-http
+  namespace: elastic-stack
+spec:
+  podSelector:
+    matchLabels:
+      kibana.k8s.elastic.co/name: kibana
+  policyTypes: [Ingress]
+  ingress:
+    - from: []
+      ports:
+        - { protocol: TCP, port: 5601 }
+
+---
+# DNS + all egress (ES needs GCS, Kibana needs ES, etc.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-all-egress
+  namespace: elastic-stack
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to: []

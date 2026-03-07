@@ -1,0 +1,221 @@
+###############################################################################
+# 2. ECK DESTROY — Reverse-order teardown
+###############################################################################
+trigger: none
+
+parameters:
+  - name: environment
+    displayName: 'Environment'
+    type: string
+    default: 'dev'
+    values: [dev, staging, production]
+  - name: deletePVCs
+    displayName: 'Delete PVCs (permanent data loss)'
+    type: boolean
+    default: false
+  - name: removeOperator
+    displayName: 'Uninstall ECK operator'
+    type: boolean
+    default: true
+  - name: takeSnapshot
+    displayName: 'Take final snapshot first'
+    type: boolean
+    default: true
+
+variables:
+  - group: 'eck-${{ parameters.environment }}-config'
+  - name: NS
+    value: 'elastic-stack'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: PreDestroy
+    displayName: 'Pre-Destroy'
+    jobs:
+      - deployment: pre_destroy
+        environment: 'eck-${{ parameters.environment }}-production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: Kubernetes@1
+                  displayName: 'Inventory: ECK resources'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'get'
+                    arguments: 'elasticsearch,kibana,beat,pods,pvc,svc'
+
+                # Shell: curl to ES API for snapshot — no ADO task for ES API calls
+                - ${{ if parameters.takeSnapshot }}:
+                  - script: |
+                      ES_HEALTH=$(kubectl -n $(NS) get elasticsearch elasticsearch -o jsonpath='{.status.health}' 2>/dev/null || echo "none")
+                      if [ "$ES_HEALTH" = "green" ] || [ "$ES_HEALTH" = "yellow" ]; then
+                        ES_PASS=$(kubectl -n $(NS) get secret elasticsearch-es-elastic-user -o jsonpath='{.data.elastic}' | base64 -d)
+                        SNAP="pre-destroy-$(date +%Y%m%d-%H%M%S)"
+                        kubectl run snap-$RANDOM --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n $(NS) -- \
+                          curl -s -u "elastic:${ES_PASS}" -X PUT "http://elasticsearch-es-http.$(NS).svc:9200/_snapshot/gcs-snapshots/${SNAP}?wait_for_completion=true"
+                        echo "Snapshot '${SNAP}' saved"
+                      else
+                        echo "ES not available (${ES_HEALTH}) — skipping snapshot"
+                      fi
+                    displayName: 'Final snapshot (shell: curl to ES API)'
+
+  - stage: RemoveStack
+    displayName: 'Remove ECK Stack'
+    dependsOn: PreDestroy
+    jobs:
+      - deployment: remove_stack
+        environment: 'eck-${{ parameters.environment }}-elasticsearch'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: Kubernetes@1
+                  displayName: 'Delete Beats'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'delete'
+                    arguments: 'beat --all --ignore-not-found=true'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete Beats ClusterRoles'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    command: 'delete'
+                    arguments: 'clusterrole metricbeat-cluster-role filebeat-cluster-role --ignore-not-found=true'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete Beats ClusterRoleBindings'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    command: 'delete'
+                    arguments: 'clusterrolebinding metricbeat-cluster-role-binding filebeat-cluster-role-binding --ignore-not-found=true'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete monitoring cluster'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'delete'
+                    arguments: 'kibana kibana-monitor elasticsearch es-monitor --ignore-not-found=true'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete Jobs'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'delete'
+                    arguments: 'job,cronjob --all --ignore-not-found=true'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete Kibana'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'delete'
+                    arguments: 'kibana kibana --ignore-not-found=true'
+
+                - task: Kubernetes@1
+                  displayName: 'Wait: Kibana pods terminated'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'wait'
+                    arguments: '--for=delete pod -l kibana.k8s.elastic.co/name=kibana --timeout=120s'
+                  continueOnError: true
+
+                - task: Kubernetes@1
+                  displayName: 'Delete Elasticsearch'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'delete'
+                    arguments: 'elasticsearch elasticsearch --ignore-not-found=true'
+
+                - task: Kubernetes@1
+                  displayName: 'Wait: ES pods terminated'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'wait'
+                    arguments: '--for=delete pod -l elasticsearch.k8s.elastic.co/cluster-name=elasticsearch --timeout=300s'
+                  continueOnError: true
+
+                - task: Kubernetes@1
+                  displayName: 'Delete security resources'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'delete'
+                    arguments: 'networkpolicy,pdb,secret,configmap --all --ignore-not-found=true'
+
+                - ${{ if parameters.deletePVCs }}:
+                  - task: Kubernetes@1
+                    displayName: 'DELETE PVCs (data loss!)'
+                    inputs:
+                      connectionType: 'Kubernetes Service Connection'
+                      kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                      namespace: '$(NS)'
+                      command: 'delete'
+                      arguments: 'pvc --all'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete namespace'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    command: 'delete'
+                    arguments: 'namespace $(NS) --ignore-not-found=true'
+
+  - stage: RemoveOperator
+    displayName: 'Remove Operator'
+    dependsOn: RemoveStack
+    condition: and(succeeded(), eq('${{ parameters.removeOperator }}', true))
+    jobs:
+      - deployment: remove_operator
+        environment: 'eck-${{ parameters.environment }}-infra'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: Kubernetes@1
+                  displayName: 'Delete operator'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    command: 'delete'
+                    arguments: '-f https://download.elastic.co/downloads/eck/2.16.0/operator.yaml --ignore-not-found=true'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete CRDs'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    command: 'delete'
+                    arguments: '-f https://download.elastic.co/downloads/eck/2.16.0/crds.yaml --ignore-not-found=true'
+
+                - task: Kubernetes@1
+                  displayName: 'Delete operator namespace'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    command: 'delete'
+                    arguments: 'namespace elastic-system --ignore-not-found=true'

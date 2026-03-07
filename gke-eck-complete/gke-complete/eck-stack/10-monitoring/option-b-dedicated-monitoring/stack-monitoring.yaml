@@ -1,0 +1,47 @@
+###############################################################################
+# OPTION B — Stack Monitoring (ships to dedicated monitoring cluster)
+#
+# Patches the MAIN Elasticsearch and Kibana to ship their monitoring
+# data to the DEDICATED es-monitor cluster instead of themselves.
+#
+# APPLY AFTER monitoring-cluster.yaml (es-monitor must be green first).
+###############################################################################
+
+# =========================================================================
+# 1. Patch main Elasticsearch → ship monitoring to es-monitor
+# =========================================================================
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: elasticsearch
+  namespace: elastic-stack
+spec:
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: es-monitor                # → Dedicated monitoring cluster
+          namespace: elastic-stack
+    logs:
+      elasticsearchRefs:
+        - name: es-monitor
+          namespace: elastic-stack
+
+---
+# =========================================================================
+# 2. Patch main Kibana → ship monitoring to es-monitor
+# =========================================================================
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: kibana
+  namespace: elastic-stack
+spec:
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: es-monitor
+          namespace: elastic-stack
+    logs:
+      elasticsearchRefs:
+        - name: es-monitor
+          namespace: elastic-stack

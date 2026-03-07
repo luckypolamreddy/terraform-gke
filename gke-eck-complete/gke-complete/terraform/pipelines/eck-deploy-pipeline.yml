@@ -1,0 +1,322 @@
+###############################################################################
+# 1. ECK DEPLOY — Full stack deployment
+#
+# PREREQUISITES:
+#   - Kubernetes Service Connection configured in ADO Project Settings
+#     pointing to GKE cluster (KubeConfig or Service Account based)
+#   - Variable group 'eck-<env>-config' with K8S_SERVICE_CONNECTION
+###############################################################################
+trigger: none
+
+parameters:
+  - name: environment
+    displayName: 'Environment'
+    type: string
+    default: 'dev'
+    values: [dev, staging, production]
+  - name: skipOperator
+    displayName: 'Skip operator install'
+    type: boolean
+    default: false
+
+variables:
+  - group: 'eck-${{ parameters.environment }}-config'
+  - name: NS
+    value: 'elastic-stack'
+  - name: ECK_PATH
+    value: '$(Build.SourcesDirectory)/eck-stack'
+  - name: ECK_VERSION
+    value: '2.16.0'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  # ── Preflight ──
+  - stage: Preflight
+    displayName: 'Preflight'
+    jobs:
+      - deployment: preflight
+        environment: 'eck-${{ parameters.environment }}-infra'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: Kubernetes@1
+                  displayName: 'Verify nodes'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    command: 'get'
+                    arguments: 'nodes -L pool-type,elastic.co/role -o wide'
+
+  # ── Operator ──
+  - stage: Operator
+    displayName: 'ECK Operator'
+    dependsOn: Preflight
+    condition: and(succeeded(), eq('${{ parameters.skipOperator }}', false))
+    jobs:
+      - deployment: operator
+        environment: 'eck-${{ parameters.environment }}-infra'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                # CRDs — no ADO task for remote URL apply, use Kubernetes@1
+                - task: Kubernetes@1
+                  displayName: 'Install CRDs'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    command: 'apply'
+                    arguments: '-f https://download.elastic.co/downloads/eck/$(ECK_VERSION)/crds.yaml'
+
+                - task: Kubernetes@1
+                  displayName: 'Install operator'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    command: 'apply'
+                    arguments: '-f https://download.elastic.co/downloads/eck/$(ECK_VERSION)/operator.yaml'
+
+                - task: Kubernetes@1
+                  displayName: 'Patch operator → system-pool'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: 'elastic-system'
+                    command: 'patch'
+                    arguments: 'deployment elastic-operator --type=strategic -p {"spec":{"template":{"spec":{"nodeSelector":{"pool-type":"system"}}}}}'
+
+                - task: Kubernetes@1
+                  displayName: 'Wait for operator ready'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: 'elastic-system'
+                    command: 'rollout'
+                    arguments: 'status deployment/elastic-operator --timeout=300s'
+
+                - task: KubernetesManifest@1
+                  displayName: 'Apply enterprise license'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'kubernetesServiceConnection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    manifests: '$(ECK_PATH)/01-operator/enterprise-trial-license.yaml'
+
+  # ── Secrets & Config ──
+  - stage: Secrets
+    displayName: 'Secrets & Config'
+    dependsOn:
+      - Preflight
+      - Operator
+    condition: succeeded('Preflight')
+    jobs:
+      - deployment: secrets
+        environment: 'eck-${{ parameters.environment }}-infra'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: KubernetesManifest@1
+                  displayName: 'Create namespace'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'kubernetesServiceConnection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    manifests: '$(ECK_PATH)/00-namespace.yaml'
+
+                # Shell required: openssl + kubectl create secret (no ADO task for secret creation from literal)
+                - script: |
+                    if ! kubectl -n $(NS) get secret gcs-credentials > /dev/null 2>&1; then
+                      echo "$(GCP_SA_KEY)" > /tmp/sa.json
+                      kubectl create secret generic gcs-credentials \
+                        --from-file=gcs.client.default.credentials_file=/tmp/sa.json -n $(NS)
+                      rm -f /tmp/sa.json
+                    else
+                      echo "GCS secret exists — skipping"
+                    fi
+                  displayName: 'Create GCS secret (shell: no ADO task for secret-from-file)'
+                  env:
+                    GCP_SA_KEY: $(GCP_SA_KEY)
+
+                # Shell required: openssl rand has no ADO task
+                - script: |
+                    if ! kubectl -n $(NS) get secret kibana-encryption-keys > /dev/null 2>&1; then
+                      kubectl create secret generic kibana-encryption-keys \
+                        --from-literal=xpack.security.encryptionKey="$(openssl rand -hex 32)" \
+                        --from-literal=xpack.encryptedSavedObjects.encryptionKey="$(openssl rand -hex 32)" \
+                        --from-literal=xpack.reporting.encryptionKey="$(openssl rand -hex 32)" \
+                        -n $(NS)
+                    else
+                      echo "Encryption keys exist — skipping"
+                    fi
+                  displayName: 'Generate encryption keys (shell: openssl rand)'
+
+                - task: KubernetesManifest@1
+                  displayName: 'Deploy synonyms'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'kubernetesServiceConnection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    manifests: '$(ECK_PATH)/03-configmaps/synonyms.yaml'
+
+                - task: KubernetesManifest@1
+                  displayName: 'Deploy RBAC'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'kubernetesServiceConnection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    manifests: |
+                      $(ECK_PATH)/06-security/rbac.yaml
+                      $(ECK_PATH)/06-security/network-policies.yaml
+                      $(ECK_PATH)/06-security/pod-disruption-budgets.yaml
+
+  # ── Elasticsearch ──
+  - stage: Elasticsearch
+    displayName: 'Elasticsearch'
+    dependsOn: Secrets
+    jobs:
+      - deployment: elasticsearch
+        environment: 'eck-${{ parameters.environment }}-elasticsearch'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: KubernetesManifest@1
+                  displayName: 'Deploy Elasticsearch'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'kubernetesServiceConnection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    manifests: '$(ECK_PATH)/04-elasticsearch/elasticsearch.yaml'
+
+                - template: templates/eck-health-check.yml
+                  parameters:
+                    k8sConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    checkElasticsearch: true
+                    checkKibana: false
+                    timeoutSeconds: 900
+
+  # ── Kibana ──
+  - stage: Kibana
+    displayName: 'Kibana'
+    dependsOn: Elasticsearch
+    jobs:
+      - deployment: kibana
+        environment: 'eck-${{ parameters.environment }}-kibana'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: KubernetesManifest@1
+                  displayName: 'Deploy Kibana'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'kubernetesServiceConnection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    manifests: '$(ECK_PATH)/05-kibana/kibana.yaml'
+
+                - template: templates/eck-health-check.yml
+                  parameters:
+                    k8sConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    checkElasticsearch: true
+                    checkKibana: true
+                    timeoutSeconds: 600
+
+  # ── Post-Config ──
+  - stage: PostConfig
+    displayName: 'Post-Config'
+    dependsOn: Kibana
+    jobs:
+      - deployment: postconfig
+        environment: 'eck-${{ parameters.environment }}-production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                # Delete previous job runs (jobs are immutable)
+                - task: Kubernetes@1
+                  displayName: 'Cleanup old jobs'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'delete'
+                    arguments: 'job setup-snapshots setup-index-defaults sync-kibana-creds --ignore-not-found=true'
+
+                - task: KubernetesManifest@1
+                  displayName: 'Deploy snapshot setup'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'kubernetesServiceConnection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    manifests: '$(ECK_PATH)/07-snapshot/setup-snapshots.yaml'
+
+                - task: Kubernetes@1
+                  displayName: 'Wait: snapshot setup'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'wait'
+                    arguments: '--for=condition=complete job/setup-snapshots --timeout=300s'
+
+                - task: KubernetesManifest@1
+                  displayName: 'Deploy index defaults'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'kubernetesServiceConnection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    manifests: '$(ECK_PATH)/09-index-settings/setup-index-defaults.yaml'
+
+                - task: Kubernetes@1
+                  displayName: 'Wait: index defaults'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'wait'
+                    arguments: '--for=condition=complete job/setup-index-defaults --timeout=300s'
+
+                - task: KubernetesManifest@1
+                  displayName: 'Deploy creds sync'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'kubernetesServiceConnection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    manifests: '$(ECK_PATH)/08-creds-sync/sync-to-secret-manager.yaml'
+
+                - task: Kubernetes@1
+                  displayName: 'Wait: creds sync'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'wait'
+                    arguments: '--for=condition=complete job/sync-kibana-creds --timeout=300s'
+
+                - task: Kubernetes@1
+                  displayName: 'Show endpoints'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceConnection: '$(K8S_SERVICE_CONNECTION)'
+                    namespace: '$(NS)'
+                    command: 'get'
+                    arguments: 'svc elasticsearch-es-http kibana-kb-http'

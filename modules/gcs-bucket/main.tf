@@ -25,10 +25,6 @@ resource "google_storage_bucket" "bucket" {
       }
     }
   }
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 # Grant service account access to the bucket

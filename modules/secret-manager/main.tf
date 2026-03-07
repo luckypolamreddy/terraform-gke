@@ -9,10 +9,6 @@ resource "google_secret_manager_secret" "secrets" {
   }
 
   labels = var.labels
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 # Grant service account access to secrets

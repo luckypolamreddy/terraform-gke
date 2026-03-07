@@ -33,11 +33,11 @@ module "secret_manager" {
   secret_ids = var.secret_ids
   labels     = var.secret_labels
 
-  iam_bindings = [
-    for secret_id in var.secret_ids : {
-      secret_id = secret_id
-      role      = "roles/secretmanager.secretAccessor"
-      member    = "serviceAccount:${var.service_account_email}"
-    }
-  ]
+  # IAM bindings removed — the Terraform SA lacks secretmanager.secrets.setIamPolicy permission.
+  # Grant secret access manually via GCP Console or ask a project admin to run:
+  #   gcloud secrets add-iam-policy-binding <secret-id> \
+  #     --member="serviceAccount:<gke-sa-email>" \
+  #     --role="roles/secretmanager.secretAccessor" \
+  #     --project=<project-id>
+  iam_bindings = []
 }

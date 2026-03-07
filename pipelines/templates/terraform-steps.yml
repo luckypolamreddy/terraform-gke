@@ -33,9 +33,11 @@ steps:
       targetType: inline
       workingDirectory: ${{ parameters.workingDirectory }}
       script: |
+        export GOOGLE_APPLICATION_CREDENTIALS="${{ parameters.credentialsFile }}"
         terraform init \
           -backend-config="bucket=${{ parameters.backendBucket }}" \
-          -backend-config="prefix=${{ parameters.backendPrefix }}"
+          -backend-config="prefix=${{ parameters.backendPrefix }}" \
+          -backend-config="credentials=${{ parameters.credentialsFile }}"
 
   - task: Bash@3
     displayName: 'Terraform Plan (${{ parameters.action }})'
@@ -43,6 +45,7 @@ steps:
       targetType: inline
       workingDirectory: ${{ parameters.workingDirectory }}
       script: |
+        export GOOGLE_APPLICATION_CREDENTIALS="${{ parameters.credentialsFile }}"
         DESTROY_FLAG=""
         if [ "${{ parameters.action }}" = "destroy" ]; then
           DESTROY_FLAG="-destroy"
@@ -60,4 +63,6 @@ steps:
     inputs:
       targetType: inline
       workingDirectory: ${{ parameters.workingDirectory }}
-      script: terraform apply tfplan
+      script: |
+        export GOOGLE_APPLICATION_CREDENTIALS="${{ parameters.credentialsFile }}"
+        terraform apply tfplan

@@ -1,3 +1,21 @@
+variable "enable_vpc" {
+  description = "Enable VPC creation"
+  type        = bool
+  default     = true
+}
+
+variable "enable_gcs" {
+  description = "Enable GCS bucket creation"
+  type        = bool
+  default     = true
+}
+
+variable "enable_secret_manager" {
+  description = "Enable Secret Manager creation"
+  type        = bool
+  default     = true
+}
+
 variable "project_id" {
   description = "GCP project ID"
   type        = string

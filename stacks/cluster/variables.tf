@@ -82,7 +82,7 @@ variable "enable_managed_prometheus" {
 
 variable "logging_components" {
   type    = list(string)
-  default = ["WORKLOADS"]
+  default = ["SYSTEM_COMPONENTS", "WORKLOADS"]
 }
 
 variable "monitoring_components" {

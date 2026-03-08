@@ -46,7 +46,7 @@ module "gke_cluster" {
   enable_cost_allocation     = var.enable_cost_allocation
   enable_managed_prometheus  = var.enable_managed_prometheus
 
-  # Logging - workloads only
+  # Logging
   logging_components    = var.logging_components
   monitoring_components = var.monitoring_components
 

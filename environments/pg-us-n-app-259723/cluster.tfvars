@@ -27,11 +27,11 @@ enable_cost_allocation     = true
 enable_managed_prometheus  = true
 
 # Logging - workloads only
-logging_components    = ["WORKLOADS"]
+logging_components    = ["SYSTEM_COMPONENTS", "WORKLOADS"]
 monitoring_components = ["SYSTEM_COMPONENTS"]
 
 # Usage metering (set BigQuery dataset ID, leave empty to disable)
-usage_metering_dataset_id      = "gke_usage_metering"
+usage_metering_dataset_id      = ""
 enable_network_egress_metering = false
 
 deletion_protection = false

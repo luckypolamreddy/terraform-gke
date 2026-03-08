@@ -74,7 +74,7 @@ variable "enable_backup" {
 variable "logging_components" {
   description = "Logging components to enable"
   type        = list(string)
-  default     = ["WORKLOADS"]
+  default     = ["SYSTEM_COMPONENTS", "WORKLOADS"]
 }
 
 # Monitoring

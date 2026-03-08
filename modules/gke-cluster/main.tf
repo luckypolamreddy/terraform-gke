@@ -19,11 +19,7 @@ resource "google_container_cluster" "cluster" {
     }
   }
 
-  # Not a private cluster, not private nodes
-  private_cluster_config {
-    enable_private_endpoint = var.enable_dns_access_only
-    enable_private_nodes    = false
-  }
+  # Public cluster - no private endpoint or private nodes
 
   # VPC-native networking (required for GKE)
   ip_allocation_policy {

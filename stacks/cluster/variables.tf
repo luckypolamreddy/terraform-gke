@@ -107,6 +107,7 @@ variable "node_pools" {
     name               = string
     machine_type       = string
     node_count         = number
+    node_locations     = optional(list(string), [])
     disk_type          = string
     disk_size_gb       = number
     image_type         = string

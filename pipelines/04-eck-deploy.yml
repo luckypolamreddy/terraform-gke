@@ -17,47 +17,48 @@ parameters:
     displayName: 'GKE Cluster Name'
     type: string
 
-  # Resource defaults sized for dev (n1-highmem-2 master-kibana, n1-highmem-4 data)
-  # For prod, override at pipeline runtime (e.g. master 4g/8Gi/2, data 16g/32Gi/8)
+  # Resource defaults sized for dev (n1-highmem-4 master-kibana, n1-highmem-8 data)
+  # For prod (n1-highmem-4 master, n1-highmem-16 data), override: master 4g/8Gi/2, data 32g/58Gi/8
+  # JVM heap = 50% of container memory (ES best practice, never exceed 26g)
   - name: esMasterJvmHeap
-    displayName: 'ES Master Node JVM Heap (e.g. 2g, 4g)'
+    displayName: 'ES Master Node JVM Heap (e.g. 4g, 8g)'
     type: string
-    default: '2g'
+    default: '4g'
 
   - name: esMasterMemory
-    displayName: 'ES Master Node Memory Limit (e.g. 4Gi, 8Gi)'
+    displayName: 'ES Master Node Memory Limit (e.g. 8Gi, 16Gi)'
     type: string
-    default: '4Gi'
+    default: '8Gi'
 
   - name: esMasterCpu
-    displayName: 'ES Master Node CPU Request (e.g. 1, 2)'
-    type: string
-    default: '1'
-
-  - name: esDataJvmHeap
-    displayName: 'ES Data Node JVM Heap (e.g. 8g, 16g)'
-    type: string
-    default: '8g'
-
-  - name: esDataMemory
-    displayName: 'ES Data Node Memory Limit (e.g. 16Gi, 32Gi)'
-    type: string
-    default: '16Gi'
-
-  - name: esDataCpu
-    displayName: 'ES Data Node CPU Request (e.g. 2, 8)'
+    displayName: 'ES Master Node CPU Request (e.g. 2, 4)'
     type: string
     default: '2'
 
-  - name: kibanaMemory
-    displayName: 'Kibana Memory Limit (e.g. 1Gi, 2Gi)'
+  - name: esDataJvmHeap
+    displayName: 'ES Data Node JVM Heap (e.g. 16g, 26g)'
     type: string
-    default: '1Gi'
+    default: '16g'
+
+  - name: esDataMemory
+    displayName: 'ES Data Node Memory Limit (e.g. 32Gi, 58Gi)'
+    type: string
+    default: '32Gi'
+
+  - name: esDataCpu
+    displayName: 'ES Data Node CPU Request (e.g. 4, 8)'
+    type: string
+    default: '4'
+
+  - name: kibanaMemory
+    displayName: 'Kibana Memory Limit (e.g. 2Gi, 4Gi)'
+    type: string
+    default: '2Gi'
 
   - name: kibanaCpu
-    displayName: 'Kibana CPU Request (e.g. 0.5, 1)'
+    displayName: 'Kibana CPU Request (e.g. 1, 2)'
     type: string
-    default: '0.5'
+    default: '1'
 
 variables:
   - group: gcp-credentials-${{ parameters.project }}
@@ -66,14 +67,16 @@ variables:
   #   GCP_PROJECT_ID        - GCP Project ID
   #   KIBANA_ENCRYPTION_KEY - 32+ char random string (openssl rand -base64 32)
   - name: ES_CLUSTER_NAME
-    value: elastic-prod
+    value: elasticsearch
+  - name: KIBANA_NAME
+    value: kibana
   # GCS bucket name must match what foundation pipeline created ({project}-eck-snapshots)
   - name: GCS_BUCKET_NAME
     value: ${{ parameters.project }}-eck-snapshots
   - name: ES_VERSION
-    value: '9.1.3'
+    value: '9.3.1'
   - name: ECK_OPERATOR_VERSION
-    value: '9.1.3'
+    value: '9.3.1'
   - name: CLUSTER_LOCATION
     value: us-east1
   - name: SNAPSHOT_REPO_NAME
@@ -295,6 +298,7 @@ stages:
               script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
+                export KIBANA_NAME="$(KIBANA_NAME)"
                 export ES_VERSION="$(ES_VERSION)"
                 export KIBANA_EXTERNAL_HOST="kibana.${{ parameters.project }}.example.com"
                 export KIBANA_ENCRYPTION_KEY="$(KIBANA_ENCRYPTION_KEY)"
@@ -323,7 +327,7 @@ stages:
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 echo "Waiting for Kibana to become green..."
                 kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green \
-                  kibana/$(ES_CLUSTER_NAME) --timeout=300s
+                  kibana/$(KIBANA_NAME) --timeout=300s
             timeoutInMinutes: 7
 
   # Stage 3: Configure snapshots, index settings, sync credentials
@@ -433,7 +437,7 @@ stages:
               script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 ES_PASSWORD=$(kubectl get secret $(ES_CLUSTER_NAME)-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
-                KIBANA_LB=$(kubectl get svc $(ES_CLUSTER_NAME)-kb-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                KIBANA_LB=$(kubectl get svc $(KIBANA_NAME)-kb-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
                 ES_LB=$(kubectl get svc $(ES_CLUSTER_NAME)-es-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
                 SECRET_VALUE="{\"username\":\"elastic\",\"password\":\"${ES_PASSWORD}\",\"kibana_url\":\"https://${KIBANA_LB}:5601\",\"elasticsearch_url\":\"https://${ES_LB}:9200\"}"

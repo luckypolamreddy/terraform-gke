@@ -24,9 +24,11 @@ parameters:
 variables:
   - group: gcp-credentials-${{ parameters.project }}
   - name: ES_CLUSTER_NAME
-    value: elastic-prod
+    value: elasticsearch
+  - name: KIBANA_NAME
+    value: kibana
   - name: ECK_OPERATOR_VERSION
-    value: '9.1.3'
+    value: '9.3.1'
   - name: CLUSTER_LOCATION
     value: us-east1
 
@@ -180,7 +182,7 @@ stages:
               targetType: inline
               script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                kubectl delete kibana $(ES_CLUSTER_NAME) -n elastic-stack || true
+                kubectl delete kibana $(KIBANA_NAME) -n elastic-stack || true
 
           - task: Bash@3
             displayName: 'Wait for Kibana deletion'
@@ -188,7 +190,7 @@ stages:
               targetType: inline
               script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                kubectl -n elastic-stack wait --for=delete kibana/$(ES_CLUSTER_NAME) --timeout=120s 2>/dev/null || true
+                kubectl -n elastic-stack wait --for=delete kibana/$(KIBANA_NAME) --timeout=120s 2>/dev/null || true
 
           - task: Bash@3
             displayName: 'Delete Elasticsearch'

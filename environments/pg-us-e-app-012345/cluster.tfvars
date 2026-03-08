@@ -39,9 +39,9 @@ deletion_protection = false
 # ============================================================
 # Node Pools - Prod (7 nodes total)
 # ============================================================
-# Pool 1: system-pool          - ECK operator + kube-system (1 node)
-# Pool 2: master-kibana-pool   - ES master (3) + Kibana (2) = 5 pods on 3 nodes
-# Pool 3: data-pool            - ES data nodes (3)
+# Pool 1: system-pool          - ECK operator + kube-system (1 node, single zone, e2-standard-2)
+# Pool 2: master-kibana-pool   - ES master (3) + Kibana (2) on 3 nodes (n1-highmem-4)
+# Pool 3: data-pool            - ES data nodes (3) on 3 nodes (n1-highmem-16)
 # ============================================================
 
 node_pools = [
@@ -49,6 +49,7 @@ node_pools = [
     name               = "system-pool"
     machine_type       = "e2-standard-2"
     node_count         = 1
+    node_locations     = ["us-east1-b"]  # Single zone = exactly 1 node total
     disk_type          = "pd-standard"
     disk_size_gb       = 50
     image_type         = "COS_CONTAINERD"

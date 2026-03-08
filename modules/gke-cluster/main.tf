@@ -95,7 +95,8 @@ resource "google_container_node_pool" "pools" {
   location = var.location
   cluster  = google_container_cluster.cluster.name
 
-  node_count = each.value.node_count
+  node_count     = each.value.node_count
+  node_locations = length(each.value.node_locations) > 0 ? each.value.node_locations : null
 
   # Autoscaling
   dynamic "autoscaling" {

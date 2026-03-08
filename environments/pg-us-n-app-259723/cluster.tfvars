@@ -15,9 +15,9 @@ services_cidr = "10.10.32.0/20"
 # Cluster (cluster_name is provided at pipeline runtime)
 kubernetes_version = "1.30"
 
-# Maintenance - Saturday 1 AM EST (6 AM UTC)
+# Maintenance - Saturday 1 AM EST (6 AM UTC) to 1 PM EST (6 PM UTC)
 maintenance_start_time = "2024-01-06T06:00:00Z"
-maintenance_end_time   = "2024-01-06T10:00:00Z"
+maintenance_end_time   = "2024-01-06T18:00:00Z"
 maintenance_recurrence = "FREQ=WEEKLY;BYDAY=SA"
 
 # Features

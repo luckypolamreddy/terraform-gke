@@ -48,7 +48,7 @@ variable "maintenance_start_time" {
 variable "maintenance_end_time" {
   description = "Maintenance window end time in RFC3339 format"
   type        = string
-  default     = "2024-01-06T10:00:00Z" # 4 hour window
+  default     = "2024-01-06T18:00:00Z" # 12 hour window (meets GKE 48h/32d requirement)
 }
 
 variable "maintenance_recurrence" {

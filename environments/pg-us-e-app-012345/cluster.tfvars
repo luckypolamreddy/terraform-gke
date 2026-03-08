@@ -16,8 +16,9 @@ services_cidr = "10.20.32.0/20"
 kubernetes_version = "1.30"
 
 # Maintenance
+# Maintenance - Saturday 1 AM EST (6 AM UTC) to 1 PM EST (6 PM UTC)
 maintenance_start_time = "2024-01-06T06:00:00Z"
-maintenance_end_time   = "2024-01-06T10:00:00Z"
+maintenance_end_time   = "2024-01-06T18:00:00Z"
 maintenance_recurrence = "FREQ=WEEKLY;BYDAY=SA"
 
 # Features

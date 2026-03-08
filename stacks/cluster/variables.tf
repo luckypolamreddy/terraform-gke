@@ -55,7 +55,7 @@ variable "maintenance_start_time" {
 variable "maintenance_end_time" {
   description = "Maintenance window end time"
   type        = string
-  default     = "2024-01-06T10:00:00Z"
+  default     = "2024-01-06T18:00:00Z"
 }
 
 variable "maintenance_recurrence" {

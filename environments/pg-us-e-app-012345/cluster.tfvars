@@ -1,5 +1,5 @@
 # ============================================================
-# pg-us-e-app-012345 - Cluster Configuration (shared by all clusters)
+# pg-us-e-app-012345 - Cluster Configuration (Prod)
 # ============================================================
 
 project_id = "pg-us-e-app-012345"
@@ -15,11 +15,12 @@ services_cidr = "10.20.32.0/20"
 # Cluster (cluster_name is provided at pipeline runtime)
 kubernetes_version = "1.30"
 
-# Maintenance
-# Maintenance - Saturday 1 AM EST (6 AM UTC) to 1 PM EST (6 PM UTC)
-maintenance_start_time = "2024-01-06T06:00:00Z"
-maintenance_end_time   = "2024-01-06T18:00:00Z"
-maintenance_recurrence = "FREQ=WEEKLY;BYDAY=SA"
+# Maintenance - Saturday (weekly)
+maintenance = {
+  start_time = "2026-02-21T00:00:00Z"
+  end_time   = "2026-02-22T00:00:00Z"
+  recurrence = "FREQ=WEEKLY;BYDAY=SA"
+}
 
 # Features
 enable_http_load_balancing = true
@@ -36,13 +37,30 @@ enable_network_egress_metering = false
 deletion_protection = false
 
 # ============================================================
-# Node Pools (6 nodes total)
+# Node Pools - Prod (7 nodes total)
 # ============================================================
-# Pool 1: master-kibana-pool - ES master (2) + Kibana (1) = 3 nodes
-# Pool 2: data-pool          - ES data nodes (3)
+# Pool 1: system-pool          - ECK operator + kube-system (1 node)
+# Pool 2: master-kibana-pool   - ES master (3) + Kibana (2) = 5 pods on 3 nodes
+# Pool 3: data-pool            - ES data nodes (3)
 # ============================================================
 
 node_pools = [
+  {
+    name               = "system-pool"
+    machine_type       = "e2-standard-2"
+    node_count         = 1
+    disk_type          = "pd-standard"
+    disk_size_gb       = 50
+    image_type         = "COS_CONTAINERD"
+    enable_autoscaling = false
+    min_node_count     = 0
+    max_node_count     = 0
+    auto_upgrade       = true
+    labels = {
+      "role" = "system"
+    }
+    taints = []
+  },
   {
     name               = "master-kibana-pool"
     machine_type       = "n1-highmem-4"

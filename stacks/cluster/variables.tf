@@ -45,23 +45,18 @@ variable "kubernetes_version" {
   type        = string
 }
 
-# Maintenance
-variable "maintenance_start_time" {
-  description = "Maintenance window start time"
-  type        = string
-  default     = "2024-01-06T06:00:00Z"
-}
-
-variable "maintenance_end_time" {
-  description = "Maintenance window end time"
-  type        = string
-  default     = "2024-01-06T18:00:00Z"
-}
-
-variable "maintenance_recurrence" {
-  description = "Maintenance recurrence"
-  type        = string
-  default     = "FREQ=WEEKLY;BYDAY=SA"
+variable "maintenance" {
+  type = object({
+    start_time = string
+    end_time   = string
+    recurrence = string
+  })
+  description = "Maintenance window configuration"
+  default = {
+    start_time = "2026-02-21T00:00:00Z"
+    end_time   = "2026-02-22T00:00:00Z"
+    recurrence = "FREQ=WEEKLY;BYDAY=SA"
+  }
 }
 
 # Features

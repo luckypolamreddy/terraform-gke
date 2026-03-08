@@ -37,10 +37,8 @@ module "gke_cluster" {
   pods_secondary_range_name     = "${local.subnet_name}-pods"
   services_secondary_range_name = "${local.subnet_name}-services"
 
-  # Maintenance - Saturday 1 AM EST (6 AM UTC)
-  maintenance_start_time = var.maintenance_start_time
-  maintenance_end_time   = var.maintenance_end_time
-  maintenance_recurrence = var.maintenance_recurrence
+  # Maintenance
+  maintenance = var.maintenance
 
   # Features
   enable_http_load_balancing = var.enable_http_load_balancing

@@ -3,7 +3,6 @@ parameters:
   - name: action
     type: string
     values:
-      - plan
       - apply
       - destroy
   - name: workingDirectory
@@ -27,6 +26,11 @@ steps:
     inputs:
       targetType: inline
       script: echo '$(GCP_SA_KEY)' > ${{ parameters.credentialsFile }}
+
+  - task: TerraformInstaller@1
+    displayName: 'Install Terraform 1.14.6'
+    inputs:
+      terraformVersion: "1.14.6"
 
   - task: Bash@3
     displayName: 'Debug: Show checked-out code'

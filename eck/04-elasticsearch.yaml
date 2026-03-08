@@ -32,12 +32,12 @@ spec:
           labels:
             elastic-role: master
         spec:
-          # Tolerate tainted master nodes
+          # Tolerate tainted master-kibana nodes
           tolerations:
             - key: "elastic-role"
-              value: "master"
+              value: "master-kibana"
               effect: "NoSchedule"
-          # Schedule on master node pool
+          # Schedule on master-kibana node pool
           affinity:
             nodeAffinity:
               requiredDuringSchedulingIgnoredDuringExecution:
@@ -46,7 +46,7 @@ spec:
                       - key: elastic-role
                         operator: In
                         values:
-                          - master
+                          - master-kibana
           initContainers:
             - name: sysctl
               securityContext:
@@ -57,10 +57,10 @@ spec:
             - name: elasticsearch
               resources:
                 requests:
-                  memory: 8Gi
-                  cpu: "2"
+                  memory: ${ES_MASTER_MEMORY}
+                  cpu: "${ES_MASTER_CPU}"
                 limits:
-                  memory: 8Gi
+                  memory: ${ES_MASTER_MEMORY}
               env:
                 - name: ES_JAVA_OPTS
                   value: "-Xms${ES_MASTER_JVM_HEAP} -Xmx${ES_MASTER_JVM_HEAP}"
@@ -118,10 +118,10 @@ spec:
             - name: elasticsearch
               resources:
                 requests:
-                  memory: 32Gi
-                  cpu: "8"
+                  memory: ${ES_DATA_MEMORY}
+                  cpu: "${ES_DATA_CPU}"
                 limits:
-                  memory: 32Gi
+                  memory: ${ES_DATA_MEMORY}
               env:
                 - name: ES_JAVA_OPTS
                   value: "-Xms${ES_DATA_JVM_HEAP} -Xmx${ES_DATA_JVM_HEAP}"

@@ -17,15 +17,45 @@ parameters:
     displayName: 'GKE Cluster Name'
     type: string
 
+  - name: esMasterJvmHeap
+    displayName: 'ES Master Node JVM Heap (e.g. 4g, 2g)'
+    type: string
+    default: '4g'
+
+  - name: esMasterMemory
+    displayName: 'ES Master Node Memory Limit (e.g. 8Gi, 4Gi)'
+    type: string
+    default: '8Gi'
+
+  - name: esMasterCpu
+    displayName: 'ES Master Node CPU Request (e.g. 2, 1)'
+    type: string
+    default: '2'
+
   - name: esDataJvmHeap
     displayName: 'ES Data Node JVM Heap (e.g. 16g, 8g)'
     type: string
     default: '16g'
 
-  - name: esMasterJvmHeap
-    displayName: 'ES Master Node JVM Heap (e.g. 4g, 2g)'
+  - name: esDataMemory
+    displayName: 'ES Data Node Memory Limit (e.g. 32Gi, 16Gi)'
     type: string
-    default: '4g'
+    default: '32Gi'
+
+  - name: esDataCpu
+    displayName: 'ES Data Node CPU Request (e.g. 8, 4)'
+    type: string
+    default: '8'
+
+  - name: kibanaMemory
+    displayName: 'Kibana Memory Limit (e.g. 2Gi, 1Gi)'
+    type: string
+    default: '2Gi'
+
+  - name: kibanaCpu
+    displayName: 'Kibana CPU Request (e.g. 1, 0.5)'
+    type: string
+    default: '1'
 
 variables:
   - group: gcp-credentials-${{ parameters.project }}
@@ -35,7 +65,7 @@ variables:
   #   KIBANA_ENCRYPTION_KEY - 32+ char random string (openssl rand -base64 32)
   - name: ES_CLUSTER_NAME
     value: elastic-prod
-  # GCS bucket name auto-derived from GKE cluster name: {clusterName}-snapshot-bucket
+  # GCS bucket name auto-derived from GKE cluster name (bucket created by foundation pipeline)
   - name: GCS_BUCKET_NAME
     value: ${{ parameters.clusterName }}-snapshot-bucket
   - name: ES_VERSION
@@ -55,7 +85,7 @@ pool:
   vmImage: 'ubuntu-latest'
 
 stages:
-  # Stage 1: Connect to GKE and deploy ECK operator
+  # Stage 1: Deploy ECK Operator
   - stage: ECK_Operator
     displayName: 'Deploy ECK Operator'
     jobs:
@@ -65,12 +95,49 @@ stages:
           - checkout: self
 
           - task: Bash@3
-            displayName: 'Install GKE Auth Plugin & Authenticate'
+            displayName: 'Install gke-gcloud-auth-plugin'
+            enabled: true
             inputs:
-              targetType: inline
+              targetType: 'inline'
               script: |
-                # Install gke-gcloud-auth-plugin (required for kubectl auth with GKE)
-                sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-sdk-gke-gcloud-auth-plugin
+                set -euo pipefail
+
+                # Add Google Cloud SDK apt source
+                sudo apt-get update
+                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+
+                sudo apt-get update
+                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+                # Find the installed plugin binary
+                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
+                echo "Plugin binary found at: $PLUGIN_BIN"
+
+                # Create a symlink in /usr/local/bin so it's always on PATH for all subsequent steps
+                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
+                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
+                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
+                  echo "Symlinked to /usr/local/bin/gke-gcloud-auth-plugin"
+                else
+                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
+                  exit 1
+                fi
+
+                # Verify
+                echo "=== Verification ==="
+                which gke-gcloud-auth-plugin
+                gke-gcloud-auth-plugin --version
+
+          - task: Bash@3
+            displayName: 'Authenticate to GKE'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
 
@@ -79,6 +146,8 @@ stages:
                 gcloud container clusters get-credentials ${{ parameters.clusterName }} \
                   --region $(CLUSTER_LOCATION) \
                   --project $(GCP_PROJECT_ID)
+            env:
+              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
 
           - task: Bash@3
             displayName: 'Create Namespaces'
@@ -96,6 +165,7 @@ stages:
               script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 kubectl apply --server-side -f https://download.elastic.co/downloads/eck/$(ECK_OPERATOR_VERSION)/crds.yaml
+                sleep 10
 
           - task: Bash@3
             displayName: 'Install ECK Operator'
@@ -104,6 +174,7 @@ stages:
               script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 kubectl apply -f https://download.elastic.co/downloads/eck/$(ECK_OPERATOR_VERSION)/operator.yaml
+                sleep 10
 
           - task: Bash@3
             displayName: 'Apply Enterprise Trial License'
@@ -112,14 +183,6 @@ stages:
               script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 kubectl apply -f $(System.DefaultWorkingDirectory)/eck/01-enterprise-license.yaml
-
-          - task: Bash@3
-            displayName: 'Wait for ECK Operator Ready'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                kubectl -n elastic-system wait --for=condition=available deployment/elastic-operator --timeout=300s
 
   # Stage 2: Deploy Elasticsearch and Kibana
   - stage: ECK_Stack
@@ -132,11 +195,49 @@ stages:
           - checkout: self
 
           - task: Bash@3
-            displayName: 'Install GKE Auth Plugin & Authenticate'
+            displayName: 'Install gke-gcloud-auth-plugin'
+            enabled: true
             inputs:
-              targetType: inline
+              targetType: 'inline'
               script: |
-                sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-sdk-gke-gcloud-auth-plugin
+                set -euo pipefail
+
+                # Add Google Cloud SDK apt source
+                sudo apt-get update
+                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+
+                sudo apt-get update
+                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+                # Find the installed plugin binary
+                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
+                echo "Plugin binary found at: $PLUGIN_BIN"
+
+                # Create a symlink in /usr/local/bin so it's always on PATH for all subsequent steps
+                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
+                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
+                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
+                  echo "Symlinked to /usr/local/bin/gke-gcloud-auth-plugin"
+                else
+                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
+                  exit 1
+                fi
+
+                # Verify
+                echo "=== Verification ==="
+                which gke-gcloud-auth-plugin
+                gke-gcloud-auth-plugin --version
+
+          - task: Bash@3
+            displayName: 'Authenticate to GKE'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
 
@@ -145,25 +246,8 @@ stages:
                 gcloud container clusters get-credentials ${{ parameters.clusterName }} \
                   --region $(CLUSTER_LOCATION) \
                   --project $(GCP_PROJECT_ID)
-
-          # Create GCS bucket for snapshots (idempotent - skips if exists)
-          - task: Bash@3
-            displayName: 'Create GCS Snapshot Bucket'
-            inputs:
-              targetType: inline
-              script: |
-                BUCKET_NAME="$(GCS_BUCKET_NAME)"
-                echo "Checking if GCS bucket gs://${BUCKET_NAME} exists..."
-                if gcloud storage buckets describe "gs://${BUCKET_NAME}" --project=$(GCP_PROJECT_ID) &>/dev/null; then
-                  echo "Bucket gs://${BUCKET_NAME} already exists. Skipping creation."
-                else
-                  echo "Creating bucket gs://${BUCKET_NAME}..."
-                  gcloud storage buckets create "gs://${BUCKET_NAME}" \
-                    --project=$(GCP_PROJECT_ID) \
-                    --location=$(CLUSTER_LOCATION) \
-                    --uniform-bucket-level-access
-                  echo "Bucket gs://${BUCKET_NAME} created successfully."
-                fi
+            env:
+              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
 
           # Create GCS credentials secret from service account key
           - task: Bash@3
@@ -195,7 +279,11 @@ stages:
                 export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
                 export ES_VERSION="$(ES_VERSION)"
                 export ES_MASTER_JVM_HEAP="${{ parameters.esMasterJvmHeap }}"
+                export ES_MASTER_MEMORY="${{ parameters.esMasterMemory }}"
+                export ES_MASTER_CPU="${{ parameters.esMasterCpu }}"
                 export ES_DATA_JVM_HEAP="${{ parameters.esDataJvmHeap }}"
+                export ES_DATA_MEMORY="${{ parameters.esDataMemory }}"
+                export ES_DATA_CPU="${{ parameters.esDataCpu }}"
                 envsubst < $(System.DefaultWorkingDirectory)/eck/04-elasticsearch.yaml | kubectl apply -f -
 
           - task: Bash@3
@@ -210,6 +298,8 @@ stages:
                 export KIBANA_ENCRYPTION_KEY="$(KIBANA_ENCRYPTION_KEY)"
                 export KIBANA_SAVED_OBJECTS_KEY="$(KIBANA_ENCRYPTION_KEY)"
                 export KIBANA_REPORTING_KEY="$(KIBANA_ENCRYPTION_KEY)"
+                export KIBANA_MEMORY="${{ parameters.kibanaMemory }}"
+                export KIBANA_CPU="${{ parameters.kibanaCpu }}"
                 envsubst < $(System.DefaultWorkingDirectory)/eck/05-kibana.yaml | kubectl apply -f -
 
           - task: Bash@3
@@ -245,11 +335,49 @@ stages:
           - checkout: self
 
           - task: Bash@3
-            displayName: 'Install GKE Auth Plugin & Authenticate'
+            displayName: 'Install gke-gcloud-auth-plugin'
+            enabled: true
             inputs:
-              targetType: inline
+              targetType: 'inline'
               script: |
-                sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-sdk-gke-gcloud-auth-plugin
+                set -euo pipefail
+
+                # Add Google Cloud SDK apt source
+                sudo apt-get update
+                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+
+                sudo apt-get update
+                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+                # Find the installed plugin binary
+                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
+                echo "Plugin binary found at: $PLUGIN_BIN"
+
+                # Create a symlink in /usr/local/bin so it's always on PATH for all subsequent steps
+                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
+                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
+                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
+                  echo "Symlinked to /usr/local/bin/gke-gcloud-auth-plugin"
+                else
+                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
+                  exit 1
+                fi
+
+                # Verify
+                echo "=== Verification ==="
+                which gke-gcloud-auth-plugin
+                gke-gcloud-auth-plugin --version
+
+          - task: Bash@3
+            displayName: 'Authenticate to GKE'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
 
@@ -258,6 +386,8 @@ stages:
                 gcloud container clusters get-credentials ${{ parameters.clusterName }} \
                   --region $(CLUSTER_LOCATION) \
                   --project $(GCP_PROJECT_ID)
+            env:
+              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
 
           # Setup snapshot repository and SLM policy
           - task: Bash@3

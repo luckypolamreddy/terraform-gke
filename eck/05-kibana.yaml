@@ -35,25 +35,28 @@ spec:
       labels:
         app: kibana
     spec:
-      # Kibana runs on controlplane-pool (no taints)
+      # Kibana runs on master-kibana pool (same as ES masters)
+      tolerations:
+        - key: "elastic-role"
+          value: "master-kibana"
+          effect: "NoSchedule"
       affinity:
         nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              preference:
-                matchExpressions:
-                  - key: role
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: elastic-role
                     operator: In
                     values:
-                      - controlplane
+                      - master-kibana
       containers:
         - name: kibana
           resources:
             requests:
-              memory: 2Gi
-              cpu: "1"
+              memory: ${KIBANA_MEMORY}
+              cpu: "${KIBANA_CPU}"
             limits:
-              memory: 2Gi
+              memory: ${KIBANA_MEMORY}
 
   # External LoadBalancer for Kibana
   http:

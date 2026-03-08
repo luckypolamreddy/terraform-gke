@@ -17,6 +17,9 @@ resource "google_container_cluster" "cluster" {
     dns_endpoint_config {
       allow_external_traffic = true
     }
+    ip_endpoints_config {
+      enabled = false
+    }
   }
 
   # Public cluster - no private endpoint or private nodes
@@ -32,9 +35,9 @@ resource "google_container_cluster" "cluster" {
   # Maintenance window - weekly on specified day
   maintenance_policy {
     recurring_window {
-      start_time = var.maintenance_start_time
-      end_time   = var.maintenance_end_time
-      recurrence = var.maintenance_recurrence
+      start_time = var.maintenance.start_time
+      end_time   = var.maintenance.end_time
+      recurrence = var.maintenance.recurrence
     }
   }
 

@@ -38,23 +38,18 @@ variable "services_secondary_range_name" {
   type        = string
 }
 
-# Maintenance window
-variable "maintenance_start_time" {
-  description = "Maintenance window start time in RFC3339 format"
-  type        = string
-  default     = "2024-01-06T06:00:00Z" # Saturday 1 AM EST = 6 AM UTC
-}
-
-variable "maintenance_end_time" {
-  description = "Maintenance window end time in RFC3339 format"
-  type        = string
-  default     = "2024-01-06T18:00:00Z" # 12 hour window (meets GKE 48h/32d requirement)
-}
-
-variable "maintenance_recurrence" {
-  description = "RRULE for maintenance recurrence"
-  type        = string
-  default     = "FREQ=WEEKLY;BYDAY=SA"
+variable "maintenance" {
+  type = object({
+    start_time = string
+    end_time   = string
+    recurrence = string
+  })
+  description = "Maintenance window configuration"
+  default = {
+    start_time = "2026-02-21T00:00:00Z"
+    end_time   = "2026-02-22T00:00:00Z"
+    recurrence = "FREQ=WEEKLY;BYDAY=SA"
+  }
 }
 
 # Addons

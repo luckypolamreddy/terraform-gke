@@ -44,11 +44,45 @@ stages:
           - checkout: self
 
           - task: Bash@3
-            displayName: 'Install GKE Auth Plugin & Authenticate'
+            displayName: 'Install gke-gcloud-auth-plugin'
+            enabled: true
             inputs:
-              targetType: inline
+              targetType: 'inline'
               script: |
-                sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-sdk-gke-gcloud-auth-plugin
+                set -euo pipefail
+
+                sudo apt-get update
+                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+
+                sudo apt-get update
+                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
+                echo "Plugin binary found at: $PLUGIN_BIN"
+
+                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
+                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
+                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
+                  echo "Symlinked to /usr/local/bin/gke-gcloud-auth-plugin"
+                else
+                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
+                  exit 1
+                fi
+
+                echo "=== Verification ==="
+                which gke-gcloud-auth-plugin
+                gke-gcloud-auth-plugin --version
+
+          - task: Bash@3
+            displayName: 'Authenticate to GKE'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
 
@@ -57,6 +91,8 @@ stages:
                 gcloud container clusters get-credentials ${{ parameters.clusterName }} \
                   --region $(CLUSTER_LOCATION) \
                   --project $(GCP_PROJECT_ID)
+            env:
+              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
 
           - task: Bash@3
             displayName: 'Delete Metricbeat'
@@ -85,11 +121,38 @@ stages:
         displayName: 'Remove ES & Kibana'
         steps:
           - task: Bash@3
-            displayName: 'Install GKE Auth Plugin & Authenticate'
+            displayName: 'Install gke-gcloud-auth-plugin'
+            enabled: true
             inputs:
-              targetType: inline
+              targetType: 'inline'
               script: |
-                sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-sdk-gke-gcloud-auth-plugin
+                set -euo pipefail
+
+                sudo apt-get update
+                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+
+                sudo apt-get update
+                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
+                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
+                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
+                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
+                else
+                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
+                  exit 1
+                fi
+
+          - task: Bash@3
+            displayName: 'Authenticate to GKE'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
 
@@ -98,6 +161,8 @@ stages:
                 gcloud container clusters get-credentials ${{ parameters.clusterName }} \
                   --region $(CLUSTER_LOCATION) \
                   --project $(GCP_PROJECT_ID)
+            env:
+              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
 
           - task: Bash@3
             displayName: 'Delete Setup Jobs'
@@ -161,11 +226,38 @@ stages:
         displayName: 'Remove ECK Operator'
         steps:
           - task: Bash@3
-            displayName: 'Install GKE Auth Plugin & Authenticate'
+            displayName: 'Install gke-gcloud-auth-plugin'
+            enabled: true
             inputs:
-              targetType: inline
+              targetType: 'inline'
               script: |
-                sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-sdk-gke-gcloud-auth-plugin
+                set -euo pipefail
+
+                sudo apt-get update
+                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+
+                sudo apt-get update
+                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
+                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
+                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
+                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
+                else
+                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
+                  exit 1
+                fi
+
+          - task: Bash@3
+            displayName: 'Authenticate to GKE'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
 
@@ -174,6 +266,8 @@ stages:
                 gcloud container clusters get-credentials ${{ parameters.clusterName }} \
                   --region $(CLUSTER_LOCATION) \
                   --project $(GCP_PROJECT_ID)
+            env:
+              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
 
           - task: Bash@3
             displayName: 'Delete License'

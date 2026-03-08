@@ -19,11 +19,6 @@ variable "vpc_self_link" {
   type        = string
 }
 
-variable "subnet_name" {
-  description = "Name of the subnet for this cluster"
-  type        = string
-}
-
 variable "subnet_cidr" {
   description = "CIDR range for the subnet"
   type        = string

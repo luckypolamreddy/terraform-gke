@@ -1,14 +1,13 @@
 # ============================================================
-# Project A - Backup Plan for Cluster 1
+# Project A - Backup Plan Configuration (shared by all clusters)
 # ============================================================
+# cluster_name is provided at pipeline runtime
+# cluster_id is auto-generated as projects/<project>/locations/<location>/clusters/<cluster_name>
+# backup_plan_name is auto-generated as <cluster_name>-backup
 
-project_id       = "project-a-id"
-region           = "us-east1"
-location         = "us-east1"
-backup_plan_name = "project-a-cluster-1-backup"
-
-# Cluster ID (from cluster stack output)
-cluster_id = "projects/project-a-id/locations/us-east1/clusters/project-a-cluster-1"
+project_id = "project-a-id"
+region     = "us-east1"
+location   = "us-east1"
 
 # Backup only elastic namespaces
 backup_namespaces = ["elastic-system", "elastic-stack"]

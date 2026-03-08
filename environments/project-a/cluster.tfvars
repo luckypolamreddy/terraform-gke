@@ -6,9 +6,8 @@ project_id = "project-a-id"
 region     = "us-east1"
 location   = "us-east1"
 
-# Network (VPC self_link from foundation output)
+# Network (subnet_name is auto-generated as <cluster_name>-subnet-01)
 vpc_self_link = "projects/project-a-id/global/networks/project-a-vpc"
-subnet_name   = "project-a-cluster-1-subnet"
 subnet_cidr   = "10.10.0.0/20"
 pods_cidr     = "10.10.16.0/20"
 services_cidr = "10.10.32.0/20"
@@ -41,17 +40,16 @@ enable_network_egress_metering = false
 deletion_protection = false
 
 # ============================================================
-# Node Pools
+# Node Pools (6 nodes total)
 # ============================================================
-# Pool 1: controlplane-pool  - General workloads + ECK operator + Kibana
-# Pool 2: elastic-master-pool - Elasticsearch master nodes (tainted)
-# Pool 3: elastic-data-pool   - Elasticsearch data nodes (tainted)
+# Pool 1: master-kibana-pool - ES master (2) + Kibana (1) = 3 nodes
+# Pool 2: data-pool          - ES data nodes (3)
 # ============================================================
 
 node_pools = [
   {
-    name               = "controlplane-pool"
-    machine_type       = "n1-highmem-16"
+    name               = "master-kibana-pool"
+    machine_type       = "n1-highmem-4"
     node_count         = 3
     disk_type          = "pd-ssd"
     disk_size_gb       = 100
@@ -61,38 +59,22 @@ node_pools = [
     max_node_count     = 0
     auto_upgrade       = true
     labels = {
-      role = "controlplane"
-    }
-    taints = []
-  },
-  {
-    name               = "elastic-master-pool"
-    machine_type       = "e2-standard-4"
-    node_count         = 3
-    disk_type          = "pd-ssd"
-    disk_size_gb       = 100
-    image_type         = "COS_CONTAINERD"
-    enable_autoscaling = false
-    min_node_count     = 0
-    max_node_count     = 0
-    auto_upgrade       = true
-    labels = {
-      "elastic-role" = "master"
+      "elastic-role" = "master-kibana"
     }
     taints = [
       {
         key    = "elastic-role"
-        value  = "master"
+        value  = "master-kibana"
         effect = "NO_SCHEDULE"
       }
     ]
   },
   {
-    name               = "elastic-data-pool"
+    name               = "data-pool"
     machine_type       = "n1-highmem-16"
     node_count         = 3
     disk_type          = "pd-ssd"
-    disk_size_gb       = 500
+    disk_size_gb       = 1000
     image_type         = "COS_CONTAINERD"
     enable_autoscaling = false
     min_node_count     = 0

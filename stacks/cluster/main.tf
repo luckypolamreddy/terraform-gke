@@ -1,8 +1,12 @@
+locals {
+  subnet_name = "${var.cluster_name}-subnet-01"
+}
+
 module "subnet" {
   source = "../../modules/subnet"
 
   project_id               = var.project_id
-  subnet_name              = var.subnet_name
+  subnet_name              = local.subnet_name
   region                   = var.region
   vpc_self_link            = var.vpc_self_link
   ip_cidr_range            = var.subnet_cidr
@@ -10,11 +14,11 @@ module "subnet" {
 
   secondary_ip_ranges = [
     {
-      range_name    = "${var.subnet_name}-pods"
+      range_name    = "${local.subnet_name}-pods"
       ip_cidr_range = var.pods_cidr
     },
     {
-      range_name    = "${var.subnet_name}-services"
+      range_name    = "${local.subnet_name}-services"
       ip_cidr_range = var.services_cidr
     }
   ]
@@ -32,8 +36,8 @@ module "gke_cluster" {
 
   enable_dns_access_only = var.enable_dns_access_only
 
-  pods_secondary_range_name     = "${var.subnet_name}-pods"
-  services_secondary_range_name = "${var.subnet_name}-services"
+  pods_secondary_range_name     = "${local.subnet_name}-pods"
+  services_secondary_range_name = "${local.subnet_name}-services"
 
   # Maintenance - Saturday 1 AM EST (6 AM UTC)
   maintenance_start_time = var.maintenance_start_time

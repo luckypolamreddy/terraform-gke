@@ -47,3 +47,4 @@ stages:
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/backup-cluster.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
                     backendPrefix: 'backup/${{ parameters.project }}/${{ parameters.clusterName }}'
+                    extraVars: '-var=cluster_name=${{ parameters.clusterName }}'

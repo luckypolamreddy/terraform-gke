@@ -13,13 +13,8 @@ variable "location" {
   type        = string
 }
 
-variable "cluster_id" {
-  description = "Full resource ID of the GKE cluster"
-  type        = string
-}
-
-variable "backup_plan_name" {
-  description = "Name of the backup plan"
+variable "cluster_name" {
+  description = "Name of the GKE cluster (used to build cluster_id and backup_plan_name)"
   type        = string
 }
 

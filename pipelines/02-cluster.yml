@@ -20,27 +20,9 @@ parameters:
       - project-a
       - project-b
 
-  - name: clusterConfig
-    displayName: 'Cluster config file'
-    type: string
-    default: cluster-1
-    values:
-      - cluster-1
-
   - name: clusterName
-    displayName: 'Cluster Name (leave empty to use tfvars default)'
+    displayName: 'Cluster Name'
     type: string
-    default: ''
-
-  - name: kubernetesVersion
-    displayName: 'Kubernetes Version (e.g., 1.30, 1.31)'
-    type: string
-    default: ''
-
-  - name: machineType
-    displayName: 'Machine Type override for controlplane-pool (leave empty for default)'
-    type: string
-    default: ''
 
 variables:
   - group: gcp-credentials-${{ parameters.project }}
@@ -58,26 +40,11 @@ stages:
               steps:
                 - checkout: self
 
-                - task: Bash@3
-                  name: buildVars
-                  displayName: 'Build variable overrides'
-                  inputs:
-                    targetType: inline
-                    script: |
-                      EXTRA=""
-                      if [ -n "${{ parameters.clusterName }}" ]; then
-                        EXTRA="$EXTRA -var=cluster_name=${{ parameters.clusterName }}"
-                      fi
-                      if [ -n "${{ parameters.kubernetesVersion }}" ]; then
-                        EXTRA="$EXTRA -var=kubernetes_version=${{ parameters.kubernetesVersion }}"
-                      fi
-                      echo "##vso[task.setvariable variable=EXTRA_VARS;isOutput=true]$EXTRA"
-
                 - template: templates/terraform-steps.yml
                   parameters:
                     action: ${{ parameters.action }}
                     workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/cluster'
-                    tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/${{ parameters.clusterConfig }}.tfvars'
+                    tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/cluster.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
-                    backendPrefix: 'cluster/${{ parameters.project }}/${{ parameters.clusterConfig }}'
-                    extraVars: '$(buildVars.EXTRA_VARS)'
+                    backendPrefix: 'cluster/${{ parameters.project }}/${{ parameters.clusterName }}'
+                    extraVars: '-var=cluster_name=${{ parameters.clusterName }}'

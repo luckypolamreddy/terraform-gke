@@ -1,5 +1,5 @@
 # ============================================================
-# Project A - Cluster 1 Configuration
+# Project A - Cluster Configuration (shared by all clusters)
 # ============================================================
 
 project_id = "project-a-id"
@@ -13,8 +13,7 @@ subnet_cidr   = "10.10.0.0/20"
 pods_cidr     = "10.10.16.0/20"
 services_cidr = "10.10.32.0/20"
 
-# Cluster
-cluster_name       = "project-a-cluster-1"
+# Cluster (cluster_name is provided at pipeline runtime)
 kubernetes_version = "1.30"
 
 # Access - DNS only, no public IP

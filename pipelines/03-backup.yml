@@ -20,12 +20,9 @@ parameters:
       - project-a
       - project-b
 
-  - name: clusterConfig
-    displayName: 'Cluster config'
+  - name: clusterName
+    displayName: 'Cluster Name'
     type: string
-    default: cluster-1
-    values:
-      - cluster-1
 
 variables:
   - group: gcp-credentials-${{ parameters.project }}
@@ -47,6 +44,6 @@ stages:
                   parameters:
                     action: ${{ parameters.action }}
                     workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/backup'
-                    tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/backup-${{ parameters.clusterConfig }}.tfvars'
+                    tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/backup-cluster.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
-                    backendPrefix: 'backup/${{ parameters.project }}/${{ parameters.clusterConfig }}'
+                    backendPrefix: 'backup/${{ parameters.project }}/${{ parameters.clusterName }}'

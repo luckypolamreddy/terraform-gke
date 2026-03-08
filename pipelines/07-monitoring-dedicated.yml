@@ -1,6 +1,5 @@
 # Pipeline: ECK Dedicated Monitoring (Option B)
 # Separate monitoring Elasticsearch cluster collects metrics from production cluster
-# Includes: Monitoring ES+Kibana, Stack Monitoring, Metricbeat, Filebeat
 
 trigger: none
 
@@ -25,33 +24,18 @@ parameters:
     displayName: 'GKE Cluster Name'
     type: string
 
-  - name: clusterLocation
-    displayName: 'GKE Cluster Location'
-    type: string
-    default: us-east1
-
-  - name: esClusterName
-    displayName: 'Production Elasticsearch Cluster Name'
-    type: string
-    default: elastic-prod
-
-  - name: monitoringClusterName
-    displayName: 'Monitoring Elasticsearch Cluster Name'
-    type: string
-    default: elastic-monitoring
-
-  - name: monitoringNodeCount
-    displayName: 'Monitoring ES Node Count'
-    type: number
-    default: 2
-
-  - name: esVersion
-    displayName: 'Elasticsearch/Beats Version'
-    type: string
-    default: '9.1.3'
-
 variables:
   - group: gcp-credentials-${{ parameters.project }}
+  - name: ES_CLUSTER_NAME
+    value: elastic-prod
+  - name: MONITORING_CLUSTER_NAME
+    value: elastic-monitoring
+  - name: MONITORING_NODE_COUNT
+    value: '2'
+  - name: ES_VERSION
+    value: '9.1.3'
+  - name: CLUSTER_LOCATION
+    value: us-east1
 
 pool:
   vmImage: 'ubuntu-latest'
@@ -66,27 +50,31 @@ stages:
           - checkout: self
 
           - task: Bash@3
-            displayName: 'Authenticate to GKE'
+            displayName: 'Install GKE Auth Plugin & Authenticate'
             inputs:
               targetType: inline
               script: |
+                sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-sdk-gke-gcloud-auth-plugin
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
+
                 echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
                 gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
                 gcloud container clusters get-credentials ${{ parameters.clusterName }} \
-                  --region ${{ parameters.clusterLocation }} \
+                  --region $(CLUSTER_LOCATION) \
                   --project $(GCP_PROJECT_ID)
 
           # --- DEPLOY ---
           - ${{ if eq(parameters.action, 'deploy') }}:
-            # Deploy monitoring Elasticsearch cluster
             - task: Bash@3
               displayName: 'Deploy Monitoring Elasticsearch'
               inputs:
                 targetType: inline
                 script: |
-                  export MONITORING_CLUSTER_NAME="${{ parameters.monitoringClusterName }}"
-                  export MONITORING_NODE_COUNT="${{ parameters.monitoringNodeCount }}"
-                  export ES_VERSION="${{ parameters.esVersion }}"
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                  export MONITORING_CLUSTER_NAME="$(MONITORING_CLUSTER_NAME)"
+                  export MONITORING_NODE_COUNT="$(MONITORING_NODE_COUNT)"
+                  export ES_VERSION="$(ES_VERSION)"
                   envsubst < $(System.DefaultWorkingDirectory)/eck/monitoring/option-b-dedicated/monitoring-elasticsearch.yaml | kubectl apply -f -
 
             - task: Bash@3
@@ -94,53 +82,54 @@ stages:
               inputs:
                 targetType: inline
                 script: |
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                   echo "Waiting for monitoring Elasticsearch..."
                   kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green \
-                    elasticsearch/${{ parameters.monitoringClusterName }} --timeout=600s
+                    elasticsearch/$(MONITORING_CLUSTER_NAME) --timeout=600s
               timeoutInMinutes: 12
 
-            # Configure stack monitoring to point to dedicated cluster
             - task: Bash@3
               displayName: 'Configure Stack Monitoring'
               inputs:
                 targetType: inline
                 script: |
-                  export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
-                  export MONITORING_CLUSTER_NAME="${{ parameters.monitoringClusterName }}"
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                  export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
+                  export MONITORING_CLUSTER_NAME="$(MONITORING_CLUSTER_NAME)"
                   envsubst < $(System.DefaultWorkingDirectory)/eck/monitoring/option-b-dedicated/stack-monitoring.yaml | kubectl apply -f -
 
-            # Get credentials for beats
             - task: Bash@3
               displayName: 'Get Credentials'
               name: getCreds
               inputs:
                 targetType: inline
                 script: |
-                  PASS=$(kubectl get secret ${{ parameters.esClusterName }}-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                  PASS=$(kubectl get secret $(ES_CLUSTER_NAME)-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
                   echo "##vso[task.setvariable variable=MONITORING_PASSWORD;issecret=true;isOutput=true]$PASS"
 
-            # Deploy Metricbeat
             - task: Bash@3
               displayName: 'Deploy Metricbeat'
               inputs:
                 targetType: inline
                 script: |
-                  export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
-                  export MONITORING_CLUSTER_NAME="${{ parameters.monitoringClusterName }}"
-                  export ES_VERSION="${{ parameters.esVersion }}"
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                  export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
+                  export MONITORING_CLUSTER_NAME="$(MONITORING_CLUSTER_NAME)"
+                  export ES_VERSION="$(ES_VERSION)"
                   export MONITORING_USER="elastic"
                   export MONITORING_PASSWORD="$(getCreds.MONITORING_PASSWORD)"
                   envsubst < $(System.DefaultWorkingDirectory)/eck/monitoring/option-b-dedicated/metricbeat.yaml | kubectl apply -f -
 
-            # Deploy Filebeat
             - task: Bash@3
               displayName: 'Deploy Filebeat'
               inputs:
                 targetType: inline
                 script: |
-                  export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
-                  export MONITORING_CLUSTER_NAME="${{ parameters.monitoringClusterName }}"
-                  export ES_VERSION="${{ parameters.esVersion }}"
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                  export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
+                  export MONITORING_CLUSTER_NAME="$(MONITORING_CLUSTER_NAME)"
+                  export ES_VERSION="$(ES_VERSION)"
                   export MONITORING_USER="elastic"
                   export MONITORING_PASSWORD="$(getCreds.MONITORING_PASSWORD)"
                   envsubst < $(System.DefaultWorkingDirectory)/eck/monitoring/option-b-dedicated/filebeat.yaml | kubectl apply -f -
@@ -150,13 +139,14 @@ stages:
               inputs:
                 targetType: inline
                 script: |
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                   echo "Monitoring cluster status:"
-                  kubectl -n elastic-stack get elasticsearch ${{ parameters.monitoringClusterName }}
+                  kubectl -n elastic-stack get elasticsearch $(MONITORING_CLUSTER_NAME)
                   echo ""
                   echo "Beats status:"
                   kubectl -n elastic-stack get beat
                   echo ""
-                  MONITORING_KB_IP=$(kubectl get svc ${{ parameters.monitoringClusterName }}-kb-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+                  MONITORING_KB_IP=$(kubectl get svc $(MONITORING_CLUSTER_NAME)-kb-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
                   echo "Monitoring Kibana URL: https://${MONITORING_KB_IP}:5601"
 
           # --- DESTROY ---
@@ -167,6 +157,7 @@ stages:
               inputs:
                 targetType: inline
                 script: |
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                   kubectl delete beat filebeat-dedicated -n elastic-stack || true
 
             - task: Bash@3
@@ -175,17 +166,18 @@ stages:
               inputs:
                 targetType: inline
                 script: |
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                   kubectl delete beat metricbeat-dedicated -n elastic-stack || true
 
-            # Remove monitoring references from production cluster
             - task: Bash@3
               displayName: 'Remove Monitoring Config from Production'
               continueOnError: true
               inputs:
                 targetType: inline
                 script: |
-                  kubectl -n elastic-stack patch elasticsearch ${{ parameters.esClusterName }} --type=merge -p '{"spec":{"monitoring":null}}'
-                  kubectl -n elastic-stack patch kibana ${{ parameters.esClusterName }} --type=merge -p '{"spec":{"monitoring":null}}'
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                  kubectl -n elastic-stack patch elasticsearch $(ES_CLUSTER_NAME) --type=merge -p '{"spec":{"monitoring":null}}'
+                  kubectl -n elastic-stack patch kibana $(ES_CLUSTER_NAME) --type=merge -p '{"spec":{"monitoring":null}}'
 
             - task: Bash@3
               displayName: 'Delete Monitoring Kibana'
@@ -193,7 +185,8 @@ stages:
               inputs:
                 targetType: inline
                 script: |
-                  kubectl delete kibana ${{ parameters.monitoringClusterName }} -n elastic-stack || true
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                  kubectl delete kibana $(MONITORING_CLUSTER_NAME) -n elastic-stack || true
 
             - task: Bash@3
               displayName: 'Delete Monitoring Elasticsearch'
@@ -201,14 +194,16 @@ stages:
               inputs:
                 targetType: inline
                 script: |
-                  kubectl delete elasticsearch ${{ parameters.monitoringClusterName }} -n elastic-stack || true
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                  kubectl delete elasticsearch $(MONITORING_CLUSTER_NAME) -n elastic-stack || true
 
             - task: Bash@3
               displayName: 'Wait for Cleanup'
               inputs:
                 targetType: inline
                 script: |
-                  kubectl -n elastic-stack wait --for=delete elasticsearch/${{ parameters.monitoringClusterName }} --timeout=300s 2>/dev/null || true
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                  kubectl -n elastic-stack wait --for=delete elasticsearch/$(MONITORING_CLUSTER_NAME) --timeout=300s 2>/dev/null || true
 
             - task: Bash@3
               displayName: 'Delete RBAC Resources'
@@ -216,4 +211,5 @@ stages:
               inputs:
                 targetType: inline
                 script: |
+                  export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                   kubectl delete clusterrolebinding metricbeat-dedicated filebeat-dedicated clusterrole metricbeat-dedicated filebeat-dedicated sa metricbeat-dedicated filebeat-dedicated -n elastic-stack || true

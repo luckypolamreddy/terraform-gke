@@ -63,7 +63,7 @@ spec:
                   memory: 8Gi
               env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms4g -Xmx4g"
+                  value: "-Xms${ES_MASTER_JVM_HEAP} -Xmx${ES_MASTER_JVM_HEAP}"
       volumeClaimTemplates:
         - metadata:
             name: elasticsearch-data
@@ -124,7 +124,7 @@ spec:
                   memory: 32Gi
               env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms16g -Xmx16g"
+                  value: "-Xms${ES_DATA_JVM_HEAP} -Xmx${ES_DATA_JVM_HEAP}"
               volumeMounts:
                 - name: synonyms
                   mountPath: /usr/share/elasticsearch/config/synonyms

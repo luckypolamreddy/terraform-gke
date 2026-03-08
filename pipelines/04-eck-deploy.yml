@@ -17,48 +17,37 @@ parameters:
     displayName: 'GKE Cluster Name'
     type: string
 
-  - name: clusterLocation
-    displayName: 'GKE Cluster Location'
+  - name: esDataJvmHeap
+    displayName: 'ES Data Node JVM Heap (e.g. 16g, 8g)'
     type: string
-    default: us-east1
+    default: '16g'
 
-  - name: esClusterName
-    displayName: 'Elasticsearch Cluster Name'
+  - name: esMasterJvmHeap
+    displayName: 'ES Master Node JVM Heap (e.g. 4g, 2g)'
     type: string
-    default: elastic-prod
-
-  - name: esVersion
-    displayName: 'Elasticsearch Version'
-    type: string
-    default: '9.1.3'
-
-  - name: eckOperatorVersion
-    displayName: 'ECK Operator Version'
-    type: string
-    default: '9.1.3'
-
-  - name: gcsBucketName
-    displayName: 'GCS Bucket for Snapshots'
-    type: string
-
-  - name: snapshotRepoName
-    displayName: 'Snapshot Repository Name'
-    type: string
-    default: gcs-snapshots
-
-  - name: snapshotBasePath
-    displayName: 'Snapshot Base Path in Bucket'
-    type: string
-    default: es-snapshots
-
-  - name: slmPolicyName
-    displayName: 'SLM Policy Name'
-    type: string
-    default: daily-snapshots
+    default: '4g'
 
 variables:
   - group: gcp-credentials-${{ parameters.project }}
-  # Variable group must contain: GCP_SA_KEY, GCP_PROJECT_ID, KIBANA_ENCRYPTION_KEY
+  # Variable group must contain:
+  #   GCP_SA_KEY          - GCP Service Account Key JSON
+  #   GCP_PROJECT_ID      - GCP Project ID
+  #   KIBANA_ENCRYPTION_KEY - 32+ char random string (openssl rand -base64 32)
+  #   GCS_BUCKET_NAME     - GCS bucket for snapshots
+  - name: ES_CLUSTER_NAME
+    value: elastic-prod
+  - name: ES_VERSION
+    value: '9.1.3'
+  - name: ECK_OPERATOR_VERSION
+    value: '9.1.3'
+  - name: CLUSTER_LOCATION
+    value: us-east1
+  - name: SNAPSHOT_REPO_NAME
+    value: gcs-snapshots
+  - name: SNAPSHOT_BASE_PATH
+    value: es-snapshots
+  - name: SLM_POLICY_NAME
+    value: daily-snapshots
 
 pool:
   vmImage: 'ubuntu-latest'
@@ -74,14 +63,19 @@ stages:
           - checkout: self
 
           - task: Bash@3
-            displayName: 'Authenticate to GKE'
+            displayName: 'Install GKE Auth Plugin & Authenticate'
             inputs:
               targetType: inline
               script: |
+                # Install gke-gcloud-auth-plugin (required for kubectl auth with GKE)
+                sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-sdk-gke-gcloud-auth-plugin
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
+
                 echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
                 gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
                 gcloud container clusters get-credentials ${{ parameters.clusterName }} \
-                  --region ${{ parameters.clusterLocation }} \
+                  --region $(CLUSTER_LOCATION) \
                   --project $(GCP_PROJECT_ID)
 
           - task: Bash@3
@@ -89,6 +83,7 @@ stages:
             inputs:
               targetType: inline
               script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 echo "Creating namespaces (idempotent - safe to re-run)..."
                 kubectl apply -f $(System.DefaultWorkingDirectory)/eck/00-namespaces.yaml
 
@@ -97,20 +92,23 @@ stages:
             inputs:
               targetType: inline
               script: |
-                kubectl apply --server-side -f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/crds.yaml
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl apply --server-side -f https://download.elastic.co/downloads/eck/$(ECK_OPERATOR_VERSION)/crds.yaml
 
           - task: Bash@3
             displayName: 'Install ECK Operator'
             inputs:
               targetType: inline
               script: |
-                kubectl apply -f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/operator.yaml
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl apply -f https://download.elastic.co/downloads/eck/$(ECK_OPERATOR_VERSION)/operator.yaml
 
           - task: Bash@3
             displayName: 'Apply Enterprise Trial License'
             inputs:
               targetType: inline
               script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 kubectl apply -f $(System.DefaultWorkingDirectory)/eck/01-enterprise-license.yaml
 
           - task: Bash@3
@@ -118,6 +116,7 @@ stages:
             inputs:
               targetType: inline
               script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 kubectl -n elastic-system wait --for=condition=available deployment/elastic-operator --timeout=300s
 
   # Stage 2: Deploy Elasticsearch and Kibana
@@ -131,14 +130,18 @@ stages:
           - checkout: self
 
           - task: Bash@3
-            displayName: 'Authenticate to GKE'
+            displayName: 'Install GKE Auth Plugin & Authenticate'
             inputs:
               targetType: inline
               script: |
+                sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-sdk-gke-gcloud-auth-plugin
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
+
                 echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
                 gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
                 gcloud container clusters get-credentials ${{ parameters.clusterName }} \
-                  --region ${{ parameters.clusterLocation }} \
+                  --region $(CLUSTER_LOCATION) \
                   --project $(GCP_PROJECT_ID)
 
           # Create GCS credentials secret from service account key
@@ -147,6 +150,7 @@ stages:
             inputs:
               targetType: inline
               script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcs-key.json
                 kubectl create secret generic gcs-credentials \
                   --from-file=gcs.client.default.credentials_file=$(Agent.TempDirectory)/gcs-key.json \
@@ -157,6 +161,7 @@ stages:
             inputs:
               targetType: inline
               script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 kubectl apply -f $(System.DefaultWorkingDirectory)/eck/03-synonyms-configmap.yaml
 
           # Apply Elasticsearch manifest with variable substitution
@@ -165,8 +170,11 @@ stages:
             inputs:
               targetType: inline
               script: |
-                export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
-                export ES_VERSION="${{ parameters.esVersion }}"
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
+                export ES_VERSION="$(ES_VERSION)"
+                export ES_MASTER_JVM_HEAP="${{ parameters.esMasterJvmHeap }}"
+                export ES_DATA_JVM_HEAP="${{ parameters.esDataJvmHeap }}"
                 envsubst < $(System.DefaultWorkingDirectory)/eck/04-elasticsearch.yaml | kubectl apply -f -
 
           - task: Bash@3
@@ -174,8 +182,9 @@ stages:
             inputs:
               targetType: inline
               script: |
-                export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
-                export ES_VERSION="${{ parameters.esVersion }}"
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
+                export ES_VERSION="$(ES_VERSION)"
                 export KIBANA_EXTERNAL_HOST="kibana.${{ parameters.project }}.example.com"
                 export KIBANA_ENCRYPTION_KEY="$(KIBANA_ENCRYPTION_KEY)"
                 export KIBANA_SAVED_OBJECTS_KEY="$(KIBANA_ENCRYPTION_KEY)"
@@ -187,9 +196,10 @@ stages:
             inputs:
               targetType: inline
               script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 echo "Waiting for Elasticsearch to become green..."
                 kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green \
-                  elasticsearch/${{ parameters.esClusterName }} --timeout=600s
+                  elasticsearch/$(ES_CLUSTER_NAME) --timeout=600s
             timeoutInMinutes: 12
 
           - task: Bash@3
@@ -197,9 +207,10 @@ stages:
             inputs:
               targetType: inline
               script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 echo "Waiting for Kibana to become green..."
                 kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green \
-                  kibana/${{ parameters.esClusterName }} --timeout=300s
+                  kibana/$(ES_CLUSTER_NAME) --timeout=300s
             timeoutInMinutes: 7
 
   # Stage 3: Configure snapshots, index settings, sync credentials
@@ -213,14 +224,18 @@ stages:
           - checkout: self
 
           - task: Bash@3
-            displayName: 'Authenticate to GKE'
+            displayName: 'Install GKE Auth Plugin & Authenticate'
             inputs:
               targetType: inline
               script: |
+                sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-sdk-gke-gcloud-auth-plugin
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
+
                 echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
                 gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
                 gcloud container clusters get-credentials ${{ parameters.clusterName }} \
-                  --region ${{ parameters.clusterLocation }} \
+                  --region $(CLUSTER_LOCATION) \
                   --project $(GCP_PROJECT_ID)
 
           # Setup snapshot repository and SLM policy
@@ -229,11 +244,12 @@ stages:
             inputs:
               targetType: inline
               script: |
-                export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
-                export GCS_BUCKET_NAME="${{ parameters.gcsBucketName }}"
-                export SNAPSHOT_REPO_NAME="${{ parameters.snapshotRepoName }}"
-                export SNAPSHOT_BASE_PATH="${{ parameters.snapshotBasePath }}"
-                export SLM_POLICY_NAME="${{ parameters.slmPolicyName }}"
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
+                export GCS_BUCKET_NAME="$(GCS_BUCKET_NAME)"
+                export SNAPSHOT_REPO_NAME="$(SNAPSHOT_REPO_NAME)"
+                export SNAPSHOT_BASE_PATH="$(SNAPSHOT_BASE_PATH)"
+                export SLM_POLICY_NAME="$(SLM_POLICY_NAME)"
                 envsubst < $(System.DefaultWorkingDirectory)/eck/06-snapshot-repository.yaml | kubectl apply -f -
 
           # Setup default index settings
@@ -242,7 +258,8 @@ stages:
             inputs:
               targetType: inline
               script: |
-                export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
                 envsubst < $(System.DefaultWorkingDirectory)/eck/07-index-settings.yaml | kubectl apply -f -
 
           # Wait for setup jobs
@@ -251,6 +268,7 @@ stages:
             inputs:
               targetType: inline
               script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 kubectl -n elastic-stack wait --for=condition=complete job/setup-snapshot-repo --timeout=300s || true
                 kubectl -n elastic-stack wait --for=condition=complete job/setup-index-settings --timeout=300s || true
 
@@ -260,9 +278,10 @@ stages:
             inputs:
               targetType: inline
               script: |
-                ES_PASSWORD=$(kubectl get secret ${{ parameters.esClusterName }}-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
-                KIBANA_LB=$(kubectl get svc ${{ parameters.esClusterName }}-kb-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-                ES_LB=$(kubectl get svc ${{ parameters.esClusterName }}-es-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                ES_PASSWORD=$(kubectl get secret $(ES_CLUSTER_NAME)-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
+                KIBANA_LB=$(kubectl get svc $(ES_CLUSTER_NAME)-kb-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                ES_LB=$(kubectl get svc $(ES_CLUSTER_NAME)-es-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
                 SECRET_VALUE="{\"username\":\"elastic\",\"password\":\"${ES_PASSWORD}\",\"kibana_url\":\"https://${KIBANA_LB}:5601\",\"elasticsearch_url\":\"https://${ES_LB}:9200\"}"
 

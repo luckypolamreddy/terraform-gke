@@ -37,57 +37,16 @@ enable_network_egress_metering = false
 deletion_protection = false
 
 # ============================================================
-# Node Pools - Prod (7 nodes total)
+# Node Pools - Prod (3 nodes across 3 zones)
 # ============================================================
-# Pool 1: system-pool          - ECK operator + kube-system (1 node, single zone, e2-standard-2)
-# Pool 2: master-kibana-pool   - ES master (3) + Kibana (2) on 3 nodes (n1-highmem-4)
-# Pool 3: data-pool            - ES data nodes (3) on 3 nodes (n1-highmem-16)
+# Single pool: n1-highmem-16 - ES (3) + Kibana (3) + ECK operator + system
 # ============================================================
 
 node_pools = [
   {
-    name               = "system-pool"
-    machine_type       = "e2-standard-2"
-    node_count         = 1
-    node_locations     = ["us-east1-b"]  # Single zone = exactly 1 node total
-    disk_type          = "pd-standard"
-    disk_size_gb       = 50
-    image_type         = "COS_CONTAINERD"
-    enable_autoscaling = false
-    min_node_count     = 0
-    max_node_count     = 0
-    auto_upgrade       = true
-    labels = {
-      "role" = "system"
-    }
-    taints = []
-  },
-  {
-    name               = "master-kibana-pool"
-    machine_type       = "n1-highmem-4"
-    node_count         = 3
-    disk_type          = "pd-ssd"
-    disk_size_gb       = 100
-    image_type         = "COS_CONTAINERD"
-    enable_autoscaling = false
-    min_node_count     = 0
-    max_node_count     = 0
-    auto_upgrade       = true
-    labels = {
-      "elastic-role" = "master-kibana"
-    }
-    taints = [
-      {
-        key    = "elastic-role"
-        value  = "master-kibana"
-        effect = "NO_SCHEDULE"
-      }
-    ]
-  },
-  {
-    name               = "data-pool"
+    name               = "elastic-pool"
     machine_type       = "n1-highmem-16"
-    node_count         = 3
+    node_count         = 1
     disk_type          = "pd-ssd"
     disk_size_gb       = 1000
     image_type         = "COS_CONTAINERD"
@@ -95,15 +54,7 @@ node_pools = [
     min_node_count     = 0
     max_node_count     = 0
     auto_upgrade       = true
-    labels = {
-      "elastic-role" = "data"
-    }
-    taints = [
-      {
-        key    = "elastic-role"
-        value  = "data"
-        effect = "NO_SCHEDULE"
-      }
-    ]
+    labels = {}
+    taints = []
   }
 ]

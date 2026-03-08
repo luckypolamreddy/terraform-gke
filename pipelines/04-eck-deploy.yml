@@ -17,48 +17,33 @@ parameters:
     displayName: 'GKE Cluster Name'
     type: string
 
-  # Resource defaults sized for dev (n1-highmem-4 master-kibana, n1-highmem-8 data)
-  # For prod (n1-highmem-4 master, n1-highmem-16 data), override: master 4g/8Gi/2, data 32g/58Gi/8
+  # Resource defaults sized for n1-highmem-16 (16 vCPU, 104GB)
+  # 3 nodes total (1 per zone), each runs 1 ES + 1 Kibana pod
   # JVM heap = 50% of container memory (ES best practice, never exceed 26g)
-  - name: esMasterJvmHeap
-    displayName: 'ES Master Node JVM Heap (e.g. 4g, 8g)'
+  - name: esJvmHeap
+    displayName: 'ES Node JVM Heap (e.g. 24g)'
     type: string
-    default: '4g'
+    default: '24g'
 
-  - name: esMasterMemory
-    displayName: 'ES Master Node Memory Limit (e.g. 8Gi, 16Gi)'
+  - name: esMemory
+    displayName: 'ES Node Memory Limit (e.g. 48Gi)'
     type: string
-    default: '8Gi'
+    default: '48Gi'
 
-  - name: esMasterCpu
-    displayName: 'ES Master Node CPU Request (e.g. 2, 4)'
+  - name: esCpu
+    displayName: 'ES Node CPU Request (e.g. 8)'
     type: string
-    default: '2'
-
-  - name: esDataJvmHeap
-    displayName: 'ES Data Node JVM Heap (e.g. 16g, 26g)'
-    type: string
-    default: '16g'
-
-  - name: esDataMemory
-    displayName: 'ES Data Node Memory Limit (e.g. 32Gi, 58Gi)'
-    type: string
-    default: '32Gi'
-
-  - name: esDataCpu
-    displayName: 'ES Data Node CPU Request (e.g. 4, 8)'
-    type: string
-    default: '4'
+    default: '8'
 
   - name: kibanaMemory
-    displayName: 'Kibana Memory Limit (e.g. 2Gi, 4Gi)'
+    displayName: 'Kibana Memory Limit (e.g. 4Gi)'
     type: string
-    default: '2Gi'
+    default: '4Gi'
 
   - name: kibanaCpu
-    displayName: 'Kibana CPU Request (e.g. 1, 2)'
+    displayName: 'Kibana CPU Request (e.g. 2)'
     type: string
-    default: '1'
+    default: '2'
 
 variables:
   - group: gcp-credentials-${{ parameters.project }}
@@ -277,12 +262,9 @@ stages:
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
                 export ES_VERSION="$(ES_VERSION)"
-                export ES_MASTER_JVM_HEAP="${{ parameters.esMasterJvmHeap }}"
-                export ES_MASTER_MEMORY="${{ parameters.esMasterMemory }}"
-                export ES_MASTER_CPU="${{ parameters.esMasterCpu }}"
-                export ES_DATA_JVM_HEAP="${{ parameters.esDataJvmHeap }}"
-                export ES_DATA_MEMORY="${{ parameters.esDataMemory }}"
-                export ES_DATA_CPU="${{ parameters.esDataCpu }}"
+                export ES_JVM_HEAP="${{ parameters.esJvmHeap }}"
+                export ES_MEMORY="${{ parameters.esMemory }}"
+                export ES_CPU="${{ parameters.esCpu }}"
                 envsubst < $(System.DefaultWorkingDirectory)/eck/04-elasticsearch.yaml | kubectl apply -f -
 
           - task: Bash@3

@@ -5,7 +5,7 @@ metadata:
   namespace: elastic-stack
 spec:
   version: ${ES_VERSION}
-  count: 2
+  count: 3
 
   elasticsearchRef:
     name: ${ES_CLUSTER_NAME}
@@ -35,20 +35,6 @@ spec:
       labels:
         app: kibana
     spec:
-      # Kibana runs on master-kibana pool (same as ES masters)
-      tolerations:
-        - key: "elastic-role"
-          value: "master-kibana"
-          effect: "NoSchedule"
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: elastic-role
-                    operator: In
-                    values:
-                      - master-kibana
       containers:
         - name: kibana
           resources:

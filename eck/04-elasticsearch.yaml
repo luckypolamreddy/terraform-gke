@@ -10,75 +10,11 @@ spec:
   secureSettings:
     - secretName: gcs-credentials
 
-  # Node sets: master, data
   nodeSets:
-    # ---- Master Nodes ----
     - name: master
       count: 3
       config:
-        node.roles: ["master"]
-        # Slow log settings
-        index.search.slowlog.threshold.query.warn: "10s"
-        index.search.slowlog.threshold.query.info: "5s"
-        index.search.slowlog.threshold.query.debug: "2s"
-        index.search.slowlog.threshold.fetch.warn: "1s"
-        index.search.slowlog.threshold.fetch.info: "800ms"
-        index.indexing.slowlog.threshold.index.warn: "10s"
-        index.indexing.slowlog.threshold.index.info: "5s"
-        # JVM heap - 50% of container memory
-        node.store.allow_mmap: false
-      podTemplate:
-        metadata:
-          labels:
-            elastic-role: master
-        spec:
-          # Tolerate tainted master-kibana nodes
-          tolerations:
-            - key: "elastic-role"
-              value: "master-kibana"
-              effect: "NoSchedule"
-          # Schedule on master-kibana node pool
-          affinity:
-            nodeAffinity:
-              requiredDuringSchedulingIgnoredDuringExecution:
-                nodeSelectorTerms:
-                  - matchExpressions:
-                      - key: elastic-role
-                        operator: In
-                        values:
-                          - master-kibana
-          initContainers:
-            - name: sysctl
-              securityContext:
-                privileged: true
-                runAsUser: 0
-              command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
-          containers:
-            - name: elasticsearch
-              resources:
-                requests:
-                  memory: ${ES_MASTER_MEMORY}
-                  cpu: "${ES_MASTER_CPU}"
-                limits:
-                  memory: ${ES_MASTER_MEMORY}
-              env:
-                - name: ES_JAVA_OPTS
-                  value: "-Xms${ES_MASTER_JVM_HEAP} -Xmx${ES_MASTER_JVM_HEAP}"
-      volumeClaimTemplates:
-        - metadata:
-            name: elasticsearch-data
-          spec:
-            accessModes: ["ReadWriteOnce"]
-            storageClassName: premium-rwo
-            resources:
-              requests:
-                storage: 50Gi
-
-    # ---- Data Nodes ----
-    - name: data
-      count: 3
-      config:
-        node.roles: ["data", "data_content", "data_hot", "ingest", "transform"]
+        node.roles: ["master", "data", "data_content", "data_hot", "ingest", "transform"]
         # Slow log settings
         index.search.slowlog.threshold.query.warn: "10s"
         index.search.slowlog.threshold.query.info: "5s"
@@ -91,23 +27,7 @@ spec:
         # Synonyms filter path
         path.repo: ["/usr/share/elasticsearch/config/synonyms"]
       podTemplate:
-        metadata:
-          labels:
-            elastic-role: data
         spec:
-          tolerations:
-            - key: "elastic-role"
-              value: "data"
-              effect: "NoSchedule"
-          affinity:
-            nodeAffinity:
-              requiredDuringSchedulingIgnoredDuringExecution:
-                nodeSelectorTerms:
-                  - matchExpressions:
-                      - key: elastic-role
-                        operator: In
-                        values:
-                          - data
           initContainers:
             - name: sysctl
               securityContext:
@@ -118,13 +38,13 @@ spec:
             - name: elasticsearch
               resources:
                 requests:
-                  memory: ${ES_DATA_MEMORY}
-                  cpu: "${ES_DATA_CPU}"
+                  memory: ${ES_MEMORY}
+                  cpu: "${ES_CPU}"
                 limits:
-                  memory: ${ES_DATA_MEMORY}
+                  memory: ${ES_MEMORY}
               env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms${ES_DATA_JVM_HEAP} -Xmx${ES_DATA_JVM_HEAP}"
+                  value: "-Xms${ES_JVM_HEAP} -Xmx${ES_JVM_HEAP}"
               volumeMounts:
                 - name: synonyms
                   mountPath: /usr/share/elasticsearch/config/synonyms

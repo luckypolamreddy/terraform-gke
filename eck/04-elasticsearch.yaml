@@ -15,14 +15,6 @@ spec:
       count: 3
       config:
         node.roles: ["master", "data", "data_content", "data_hot", "ingest", "transform"]
-        # Slow log settings
-        index.search.slowlog.threshold.query.warn: "10s"
-        index.search.slowlog.threshold.query.info: "5s"
-        index.search.slowlog.threshold.query.debug: "2s"
-        index.search.slowlog.threshold.fetch.warn: "1s"
-        index.search.slowlog.threshold.fetch.info: "800ms"
-        index.indexing.slowlog.threshold.index.warn: "10s"
-        index.indexing.slowlog.threshold.index.info: "5s"
         node.store.allow_mmap: false
         # Synonyms filter path
         path.repo: ["/usr/share/elasticsearch/config/synonyms"]
@@ -38,10 +30,10 @@ spec:
             - name: elasticsearch
               resources:
                 requests:
-                  memory: ${ES_MEMORY}
-                  cpu: "${ES_CPU}"
+                  memory: 48Gi
+                  cpu: "8"
                 limits:
-                  memory: ${ES_MEMORY}
+                  memory: 48Gi
               env:
                 - name: ES_JAVA_OPTS
                   value: "-Xms${ES_JVM_HEAP} -Xmx${ES_JVM_HEAP}"

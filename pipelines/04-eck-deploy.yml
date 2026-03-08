@@ -17,33 +17,10 @@ parameters:
     displayName: 'GKE Cluster Name'
     type: string
 
-  # Resource defaults sized for n1-highmem-16 (16 vCPU, 104GB)
-  # 3 nodes total (1 per zone), each runs 1 ES + 1 Kibana pod
-  # JVM heap = 50% of container memory (ES best practice, never exceed 26g)
   - name: esJvmHeap
-    displayName: 'ES Node JVM Heap (e.g. 24g)'
+    displayName: 'ES JVM Heap (e.g. 24g)'
     type: string
     default: '24g'
-
-  - name: esMemory
-    displayName: 'ES Node Memory Limit (e.g. 48Gi)'
-    type: string
-    default: '48Gi'
-
-  - name: esCpu
-    displayName: 'ES Node CPU Request (e.g. 8)'
-    type: string
-    default: '8'
-
-  - name: kibanaMemory
-    displayName: 'Kibana Memory Limit (e.g. 4Gi)'
-    type: string
-    default: '4Gi'
-
-  - name: kibanaCpu
-    displayName: 'Kibana CPU Request (e.g. 2)'
-    type: string
-    default: '2'
 
 variables:
   - group: gcp-credentials-${{ parameters.project }}
@@ -263,8 +240,6 @@ stages:
                 export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
                 export ES_VERSION="$(ES_VERSION)"
                 export ES_JVM_HEAP="${{ parameters.esJvmHeap }}"
-                export ES_MEMORY="${{ parameters.esMemory }}"
-                export ES_CPU="${{ parameters.esCpu }}"
                 envsubst < $(System.DefaultWorkingDirectory)/eck/04-elasticsearch.yaml | kubectl apply -f -
 
           - task: Bash@3
@@ -280,8 +255,6 @@ stages:
                 export KIBANA_ENCRYPTION_KEY="$(KIBANA_ENCRYPTION_KEY)"
                 export KIBANA_SAVED_OBJECTS_KEY="$(KIBANA_ENCRYPTION_KEY)"
                 export KIBANA_REPORTING_KEY="$(KIBANA_ENCRYPTION_KEY)"
-                export KIBANA_MEMORY="${{ parameters.kibanaMemory }}"
-                export KIBANA_CPU="${{ parameters.kibanaCpu }}"
                 envsubst < $(System.DefaultWorkingDirectory)/eck/05-kibana.yaml | kubectl apply -f -
 
           - task: Bash@3

@@ -39,10 +39,10 @@ spec:
         - name: kibana
           resources:
             requests:
-              memory: ${KIBANA_MEMORY}
-              cpu: "${KIBANA_CPU}"
+              memory: 4Gi
+              cpu: "2"
             limits:
-              memory: ${KIBANA_MEMORY}
+              memory: 4Gi
 
   # External LoadBalancer for Kibana
   http:

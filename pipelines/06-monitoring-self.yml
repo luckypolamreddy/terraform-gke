@@ -43,104 +43,103 @@ parameters:
 variables:
   - group: gcp-credentials-${{ parameters.project }}
 
+pool:
+  vmImage: 'ubuntu-latest'
+
 stages:
   - stage: SelfMonitoring
     displayName: 'Self-Monitoring - ${{ parameters.action }}'
     jobs:
-      - deployment: MonitoringSelf
+      - job: MonitoringSelf
         displayName: 'Self-Monitoring ${{ parameters.action }}'
-        environment: '${{ parameters.project }}-eck'
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - checkout: self
+        steps:
+          - checkout: self
 
-                - task: Bash@3
-                  displayName: 'Authenticate to GKE'
-                  inputs:
-                    targetType: inline
-                    script: |
-                      echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
-                      gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
-                      gcloud container clusters get-credentials ${{ parameters.clusterName }} \
-                        --region ${{ parameters.clusterLocation }} \
-                        --project $(GCP_PROJECT_ID)
+          - task: Bash@3
+            displayName: 'Authenticate to GKE'
+            inputs:
+              targetType: inline
+              script: |
+                echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+                gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+                gcloud container clusters get-credentials ${{ parameters.clusterName }} \
+                  --region ${{ parameters.clusterLocation }} \
+                  --project $(GCP_PROJECT_ID)
 
-                # --- DEPLOY ---
-                - ${{ if eq(parameters.action, 'deploy') }}:
-                  # Get elastic user password for monitoring
-                  - task: Bash@3
-                    displayName: 'Get Monitoring Credentials'
-                    name: getCreds
-                    inputs:
-                      targetType: inline
-                      script: |
-                        PASS=$(kubectl get secret ${{ parameters.esClusterName }}-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
-                        echo "##vso[task.setvariable variable=MONITORING_PASSWORD;issecret=true;isOutput=true]$PASS"
+          # --- DEPLOY ---
+          - ${{ if eq(parameters.action, 'deploy') }}:
+            # Get elastic user password for monitoring
+            - task: Bash@3
+              displayName: 'Get Monitoring Credentials'
+              name: getCreds
+              inputs:
+                targetType: inline
+                script: |
+                  PASS=$(kubectl get secret ${{ parameters.esClusterName }}-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
+                  echo "##vso[task.setvariable variable=MONITORING_PASSWORD;issecret=true;isOutput=true]$PASS"
 
-                  - task: Bash@3
-                    displayName: 'Deploy Stack Monitoring Config'
-                    inputs:
-                      targetType: inline
-                      script: |
-                        export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
-                        envsubst < $(System.DefaultWorkingDirectory)/eck/monitoring/option-a-self/stack-monitoring.yaml | kubectl apply -f -
+            - task: Bash@3
+              displayName: 'Deploy Stack Monitoring Config'
+              inputs:
+                targetType: inline
+                script: |
+                  export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
+                  envsubst < $(System.DefaultWorkingDirectory)/eck/monitoring/option-a-self/stack-monitoring.yaml | kubectl apply -f -
 
-                  - task: Bash@3
-                    displayName: 'Deploy Metricbeat'
-                    inputs:
-                      targetType: inline
-                      script: |
-                        export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
-                        export ES_VERSION="${{ parameters.esVersion }}"
-                        export MONITORING_USER="elastic"
-                        export MONITORING_PASSWORD="$(getCreds.MONITORING_PASSWORD)"
-                        envsubst < $(System.DefaultWorkingDirectory)/eck/monitoring/option-a-self/metricbeat.yaml | kubectl apply -f -
+            - task: Bash@3
+              displayName: 'Deploy Metricbeat'
+              inputs:
+                targetType: inline
+                script: |
+                  export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
+                  export ES_VERSION="${{ parameters.esVersion }}"
+                  export MONITORING_USER="elastic"
+                  export MONITORING_PASSWORD="$(getCreds.MONITORING_PASSWORD)"
+                  envsubst < $(System.DefaultWorkingDirectory)/eck/monitoring/option-a-self/metricbeat.yaml | kubectl apply -f -
 
-                  - task: Bash@3
-                    displayName: 'Deploy Filebeat'
-                    inputs:
-                      targetType: inline
-                      script: |
-                        export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
-                        export ES_VERSION="${{ parameters.esVersion }}"
-                        export MONITORING_USER="elastic"
-                        export MONITORING_PASSWORD="$(getCreds.MONITORING_PASSWORD)"
-                        envsubst < $(System.DefaultWorkingDirectory)/eck/monitoring/option-a-self/filebeat.yaml | kubectl apply -f -
+            - task: Bash@3
+              displayName: 'Deploy Filebeat'
+              inputs:
+                targetType: inline
+                script: |
+                  export ES_CLUSTER_NAME="${{ parameters.esClusterName }}"
+                  export ES_VERSION="${{ parameters.esVersion }}"
+                  export MONITORING_USER="elastic"
+                  export MONITORING_PASSWORD="$(getCreds.MONITORING_PASSWORD)"
+                  envsubst < $(System.DefaultWorkingDirectory)/eck/monitoring/option-a-self/filebeat.yaml | kubectl apply -f -
 
-                  - task: Bash@3
-                    displayName: 'Verify Monitoring'
-                    inputs:
-                      targetType: inline
-                      script: |
-                        echo "Waiting for beats to be ready..."
-                        kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green beat/metricbeat-monitoring --timeout=120s 2>/dev/null || echo "Metricbeat still starting..."
-                        kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green beat/filebeat-monitoring --timeout=120s 2>/dev/null || echo "Filebeat still starting..."
-                        echo "Self-monitoring deployed. Check Kibana Stack Monitoring."
+            - task: Bash@3
+              displayName: 'Verify Monitoring'
+              inputs:
+                targetType: inline
+                script: |
+                  echo "Waiting for beats to be ready..."
+                  kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green beat/metricbeat-monitoring --timeout=120s 2>/dev/null || echo "Metricbeat still starting..."
+                  kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green beat/filebeat-monitoring --timeout=120s 2>/dev/null || echo "Filebeat still starting..."
+                  echo "Self-monitoring deployed. Check Kibana Stack Monitoring."
 
-                # --- DESTROY ---
-                - ${{ if eq(parameters.action, 'destroy') }}:
-                  - task: Bash@3
-                    displayName: 'Delete Filebeat'
-                    continueOnError: true
-                    inputs:
-                      targetType: inline
-                      script: |
-                        kubectl delete beat filebeat-monitoring -n elastic-stack || true
+          # --- DESTROY ---
+          - ${{ if eq(parameters.action, 'destroy') }}:
+            - task: Bash@3
+              displayName: 'Delete Filebeat'
+              continueOnError: true
+              inputs:
+                targetType: inline
+                script: |
+                  kubectl delete beat filebeat-monitoring -n elastic-stack || true
 
-                  - task: Bash@3
-                    displayName: 'Delete Metricbeat'
-                    continueOnError: true
-                    inputs:
-                      targetType: inline
-                      script: |
-                        kubectl delete beat metricbeat-monitoring -n elastic-stack || true
+            - task: Bash@3
+              displayName: 'Delete Metricbeat'
+              continueOnError: true
+              inputs:
+                targetType: inline
+                script: |
+                  kubectl delete beat metricbeat-monitoring -n elastic-stack || true
 
-                  - task: Bash@3
-                    displayName: 'Delete RBAC Resources'
-                    continueOnError: true
-                    inputs:
-                      targetType: inline
-                      script: |
-                        kubectl delete clusterrolebinding metricbeat filebeat clusterrole metricbeat filebeat sa metricbeat filebeat -n elastic-stack || true
+            - task: Bash@3
+              displayName: 'Delete RBAC Resources'
+              continueOnError: true
+              inputs:
+                targetType: inline
+                script: |
+                  kubectl delete clusterrolebinding metricbeat filebeat clusterrole metricbeat filebeat sa metricbeat filebeat -n elastic-stack || true

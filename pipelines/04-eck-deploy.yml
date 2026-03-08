@@ -90,29 +90,34 @@ stages:
                         --region ${{ parameters.clusterLocation }} \
                         --project $(GCP_PROJECT_ID)
 
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Create Namespaces'
                   inputs:
-                    command: apply
-                    arguments: '-f $(System.DefaultWorkingDirectory)/eck/00-namespaces.yaml'
+                    targetType: inline
+                    script: |
+                      echo "Creating namespaces (idempotent - safe to re-run)..."
+                      kubectl apply -f $(System.DefaultWorkingDirectory)/eck/00-namespaces.yaml
 
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Install ECK CRDs'
                   inputs:
-                    command: apply
-                    arguments: '--server-side -f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/crds.yaml'
+                    targetType: inline
+                    script: |
+                      kubectl apply --server-side -f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/crds.yaml
 
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Install ECK Operator'
                   inputs:
-                    command: apply
-                    arguments: '-f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/operator.yaml'
+                    targetType: inline
+                    script: |
+                      kubectl apply -f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/operator.yaml
 
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Apply Enterprise Trial License'
                   inputs:
-                    command: apply
-                    arguments: '-f $(System.DefaultWorkingDirectory)/eck/01-enterprise-license.yaml'
+                    targetType: inline
+                    script: |
+                      kubectl apply -f $(System.DefaultWorkingDirectory)/eck/01-enterprise-license.yaml
 
                 - task: Bash@3
                   displayName: 'Wait for ECK Operator Ready'
@@ -157,11 +162,12 @@ stages:
                         --from-file=gcs.client.default.credentials_file=$(Agent.TempDirectory)/gcs-key.json \
                         -n elastic-stack --dry-run=client -o yaml | kubectl apply -f -
 
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Apply Synonyms ConfigMap'
                   inputs:
-                    command: apply
-                    arguments: '-f $(System.DefaultWorkingDirectory)/eck/03-synonyms-configmap.yaml'
+                    targetType: inline
+                    script: |
+                      kubectl apply -f $(System.DefaultWorkingDirectory)/eck/03-synonyms-configmap.yaml
 
                 # Apply Elasticsearch manifest with variable substitution
                 - task: Bash@3

@@ -64,19 +64,21 @@ stages:
                         --region ${{ parameters.clusterLocation }} \
                         --project $(GCP_PROJECT_ID)
 
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Delete Metricbeat'
                   continueOnError: true
                   inputs:
-                    command: delete
-                    arguments: 'beat --all -n elastic-stack'
+                    targetType: inline
+                    script: |
+                      kubectl delete beat --all -n elastic-stack || true
 
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Delete Monitoring Cluster'
                   continueOnError: true
                   inputs:
-                    command: delete
-                    arguments: 'kibana,elasticsearch -l app.kubernetes.io/part-of=monitoring -n elastic-stack'
+                    targetType: inline
+                    script: |
+                      kubectl delete kibana,elasticsearch -l app.kubernetes.io/part-of=monitoring -n elastic-stack || true
 
   # Stage 2: Remove Elastic Stack
   - stage: RemoveStack
@@ -102,20 +104,22 @@ stages:
                         --project $(GCP_PROJECT_ID)
 
                 # Delete setup jobs
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Delete Setup Jobs'
                   continueOnError: true
                   inputs:
-                    command: delete
-                    arguments: 'job setup-snapshot-repo setup-index-settings -n elastic-stack'
+                    targetType: inline
+                    script: |
+                      kubectl delete job setup-snapshot-repo setup-index-settings -n elastic-stack || true
 
                 # Delete Kibana first
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Delete Kibana'
                   continueOnError: true
                   inputs:
-                    command: delete
-                    arguments: 'kibana ${{ parameters.esClusterName }} -n elastic-stack'
+                    targetType: inline
+                    script: |
+                      kubectl delete kibana ${{ parameters.esClusterName }} -n elastic-stack || true
 
                 - task: Bash@3
                   displayName: 'Wait for Kibana deletion'
@@ -125,12 +129,13 @@ stages:
                       kubectl -n elastic-stack wait --for=delete kibana/${{ parameters.esClusterName }} --timeout=120s 2>/dev/null || true
 
                 # Delete Elasticsearch
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Delete Elasticsearch'
                   continueOnError: true
                   inputs:
-                    command: delete
-                    arguments: 'elasticsearch ${{ parameters.esClusterName }} -n elastic-stack'
+                    targetType: inline
+                    script: |
+                      kubectl delete elasticsearch ${{ parameters.esClusterName }} -n elastic-stack || true
 
                 - task: Bash@3
                   displayName: 'Wait for ES deletion'
@@ -140,12 +145,13 @@ stages:
                       kubectl -n elastic-stack wait --for=delete elasticsearch/${{ parameters.esClusterName }} --timeout=300s 2>/dev/null || true
 
                 # Delete secrets and configmaps
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Delete Secrets & ConfigMaps'
                   continueOnError: true
                   inputs:
-                    command: delete
-                    arguments: 'secret gcs-credentials configmap elasticsearch-synonyms -n elastic-stack'
+                    targetType: inline
+                    script: |
+                      kubectl delete secret gcs-credentials configmap elasticsearch-synonyms -n elastic-stack || true
 
   # Stage 3: Remove Operator (optional)
   - stage: RemoveOperator
@@ -171,28 +177,32 @@ stages:
                         --region ${{ parameters.clusterLocation }} \
                         --project $(GCP_PROJECT_ID)
 
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Delete License'
                   continueOnError: true
                   inputs:
-                    command: delete
-                    arguments: 'secret eck-trial-license -n elastic-system'
+                    targetType: inline
+                    script: |
+                      kubectl delete secret eck-trial-license -n elastic-system || true
 
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Delete ECK Operator'
                   inputs:
-                    command: delete
-                    arguments: '-f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/operator.yaml'
+                    targetType: inline
+                    script: |
+                      kubectl delete -f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/operator.yaml || true
 
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Delete ECK CRDs'
                   inputs:
-                    command: delete
-                    arguments: '-f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/crds.yaml'
+                    targetType: inline
+                    script: |
+                      kubectl delete -f https://download.elastic.co/downloads/eck/${{ parameters.eckOperatorVersion }}/crds.yaml || true
 
-                - task: Kubernetes@1
+                - task: Bash@3
                   displayName: 'Delete Namespaces'
                   continueOnError: true
                   inputs:
-                    command: delete
-                    arguments: 'namespace elastic-system elastic-stack'
+                    targetType: inline
+                    script: |
+                      kubectl delete namespace elastic-system elastic-stack || true

@@ -30,12 +30,14 @@ parameters:
 variables:
   - group: gcp-credentials-${{ parameters.project }}
   # Variable group must contain:
-  #   GCP_SA_KEY          - GCP Service Account Key JSON
-  #   GCP_PROJECT_ID      - GCP Project ID
+  #   GCP_SA_KEY            - GCP Service Account Key JSON
+  #   GCP_PROJECT_ID        - GCP Project ID
   #   KIBANA_ENCRYPTION_KEY - 32+ char random string (openssl rand -base64 32)
-  #   GCS_BUCKET_NAME     - GCS bucket for snapshots
   - name: ES_CLUSTER_NAME
     value: elastic-prod
+  # GCS bucket name auto-derived from GKE cluster name: {clusterName}-snapshot-bucket
+  - name: GCS_BUCKET_NAME
+    value: ${{ parameters.clusterName }}-snapshot-bucket
   - name: ES_VERSION
     value: '9.1.3'
   - name: ECK_OPERATOR_VERSION
@@ -143,6 +145,25 @@ stages:
                 gcloud container clusters get-credentials ${{ parameters.clusterName }} \
                   --region $(CLUSTER_LOCATION) \
                   --project $(GCP_PROJECT_ID)
+
+          # Create GCS bucket for snapshots (idempotent - skips if exists)
+          - task: Bash@3
+            displayName: 'Create GCS Snapshot Bucket'
+            inputs:
+              targetType: inline
+              script: |
+                BUCKET_NAME="$(GCS_BUCKET_NAME)"
+                echo "Checking if GCS bucket gs://${BUCKET_NAME} exists..."
+                if gcloud storage buckets describe "gs://${BUCKET_NAME}" --project=$(GCP_PROJECT_ID) &>/dev/null; then
+                  echo "Bucket gs://${BUCKET_NAME} already exists. Skipping creation."
+                else
+                  echo "Creating bucket gs://${BUCKET_NAME}..."
+                  gcloud storage buckets create "gs://${BUCKET_NAME}" \
+                    --project=$(GCP_PROJECT_ID) \
+                    --location=$(CLUSTER_LOCATION) \
+                    --uniform-bucket-level-access
+                  echo "Bucket gs://${BUCKET_NAME} created successfully."
+                fi
 
           # Create GCS credentials secret from service account key
           - task: Bash@3

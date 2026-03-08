@@ -28,12 +28,6 @@ variable "kubernetes_version" {
   type        = string
 }
 
-variable "enable_dns_access_only" {
-  description = "Enable private endpoint (DNS access only, no public IP for control plane)"
-  type        = bool
-  default     = true
-}
-
 variable "pods_secondary_range_name" {
   description = "Name of the secondary IP range for pods"
   type        = string

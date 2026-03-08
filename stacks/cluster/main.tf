@@ -34,8 +34,6 @@ module "gke_cluster" {
   subnetwork         = module.subnet.subnet_self_link
   kubernetes_version = var.kubernetes_version
 
-  enable_dns_access_only = var.enable_dns_access_only
-
   pods_secondary_range_name     = "${local.subnet_name}-pods"
   services_secondary_range_name = "${local.subnet_name}-services"
 

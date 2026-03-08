@@ -15,9 +15,6 @@ services_cidr = "10.10.32.0/20"
 # Cluster (cluster_name is provided at pipeline runtime)
 kubernetes_version = "1.30"
 
-# Access - public cluster (not private)
-enable_dns_access_only = false
-
 # Maintenance - Saturday 1 AM EST (6 AM UTC)
 maintenance_start_time = "2024-01-06T06:00:00Z"
 maintenance_end_time   = "2024-01-06T10:00:00Z"

@@ -45,12 +45,6 @@ variable "kubernetes_version" {
   type        = string
 }
 
-variable "enable_dns_access_only" {
-  description = "Enable DNS-only access to control plane"
-  type        = bool
-  default     = true
-}
-
 # Maintenance
 variable "maintenance_start_time" {
   description = "Maintenance window start time"

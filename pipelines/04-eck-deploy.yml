@@ -179,15 +179,9 @@ stages:
               script: |
                 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
                 kubectl apply -f https://download.elastic.co/downloads/eck/$(ECK_OPERATOR_VERSION)/operator.yaml
-                sleep 10
 
-          - task: Bash@3
-            displayName: 'Apply Enterprise Trial License'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                kubectl apply -f $(System.DefaultWorkingDirectory)/eck/01-enterprise-license.yaml
+                echo "Waiting for ECK operator to be ready..."
+                kubectl -n elastic-system rollout status deployment/elastic-operator --timeout=120s
 
   # Stage 2: Deploy Elasticsearch and Kibana
   - stage: ECK_Stack

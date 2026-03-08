@@ -272,15 +272,6 @@ stages:
               USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
 
           - task: Bash@3
-            displayName: 'Delete License'
-            continueOnError: true
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                kubectl delete secret eck-trial-license -n elastic-system || true
-
-          - task: Bash@3
             displayName: 'Delete ECK Operator'
             inputs:
               targetType: inline

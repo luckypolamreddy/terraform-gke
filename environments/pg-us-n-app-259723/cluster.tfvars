@@ -28,7 +28,7 @@ enable_backup              = true
 enable_cost_allocation     = true
 enable_managed_prometheus  = true
 
-# Logging - workloads only
+# Logging
 logging_components    = ["SYSTEM_COMPONENTS", "WORKLOADS"]
 monitoring_components = ["SYSTEM_COMPONENTS"]
 
@@ -41,9 +41,9 @@ deletion_protection = false
 # ============================================================
 # Node Pools - Non-Prod (7 nodes total)
 # ============================================================
-# Pool 1: system-pool          - ECK operator + kube-system (1 node)
-# Pool 2: master-kibana-pool   - ES master (3) + Kibana (2) = 5 pods on 3 nodes
-# Pool 3: data-pool            - ES data nodes (3)
+# Pool 1: system-pool          - ECK operator + kube-system (1 node, e2-standard-2)
+# Pool 2: master-kibana-pool   - ES master (3) + Kibana (2) on 3 nodes (n1-highmem-2)
+# Pool 3: data-pool            - ES data nodes (3) on 3 nodes (n1-highmem-4)
 # ============================================================
 
 node_pools = [
@@ -87,10 +87,10 @@ node_pools = [
   },
   {
     name               = "data-pool"
-    machine_type       = "n1-highmem-8"
+    machine_type       = "n1-highmem-4"
     node_count         = 3
     disk_type          = "pd-ssd"
-    disk_size_gb       = 1000
+    disk_size_gb       = 500
     image_type         = "COS_CONTAINERD"
     enable_autoscaling = false
     min_node_count     = 0

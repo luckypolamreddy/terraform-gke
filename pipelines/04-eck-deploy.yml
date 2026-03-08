@@ -17,45 +17,47 @@ parameters:
     displayName: 'GKE Cluster Name'
     type: string
 
+  # Resource defaults sized for dev (n1-highmem-2 master-kibana, n1-highmem-4 data)
+  # For prod, override at pipeline runtime (e.g. master 4g/8Gi/2, data 16g/32Gi/8)
   - name: esMasterJvmHeap
-    displayName: 'ES Master Node JVM Heap (e.g. 4g, 2g)'
+    displayName: 'ES Master Node JVM Heap (e.g. 2g, 4g)'
     type: string
-    default: '4g'
+    default: '2g'
 
   - name: esMasterMemory
-    displayName: 'ES Master Node Memory Limit (e.g. 8Gi, 4Gi)'
+    displayName: 'ES Master Node Memory Limit (e.g. 4Gi, 8Gi)'
     type: string
-    default: '8Gi'
+    default: '4Gi'
 
   - name: esMasterCpu
-    displayName: 'ES Master Node CPU Request (e.g. 2, 1)'
+    displayName: 'ES Master Node CPU Request (e.g. 1, 2)'
+    type: string
+    default: '1'
+
+  - name: esDataJvmHeap
+    displayName: 'ES Data Node JVM Heap (e.g. 8g, 16g)'
+    type: string
+    default: '8g'
+
+  - name: esDataMemory
+    displayName: 'ES Data Node Memory Limit (e.g. 16Gi, 32Gi)'
+    type: string
+    default: '16Gi'
+
+  - name: esDataCpu
+    displayName: 'ES Data Node CPU Request (e.g. 2, 8)'
     type: string
     default: '2'
 
-  - name: esDataJvmHeap
-    displayName: 'ES Data Node JVM Heap (e.g. 16g, 8g)'
-    type: string
-    default: '16g'
-
-  - name: esDataMemory
-    displayName: 'ES Data Node Memory Limit (e.g. 32Gi, 16Gi)'
-    type: string
-    default: '32Gi'
-
-  - name: esDataCpu
-    displayName: 'ES Data Node CPU Request (e.g. 8, 4)'
-    type: string
-    default: '8'
-
   - name: kibanaMemory
-    displayName: 'Kibana Memory Limit (e.g. 2Gi, 1Gi)'
+    displayName: 'Kibana Memory Limit (e.g. 1Gi, 2Gi)'
     type: string
-    default: '2Gi'
+    default: '1Gi'
 
   - name: kibanaCpu
-    displayName: 'Kibana CPU Request (e.g. 1, 0.5)'
+    displayName: 'Kibana CPU Request (e.g. 0.5, 1)'
     type: string
-    default: '1'
+    default: '0.5'
 
 variables:
   - group: gcp-credentials-${{ parameters.project }}

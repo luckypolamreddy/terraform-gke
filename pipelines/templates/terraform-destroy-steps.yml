@@ -1,0 +1,63 @@
+# Template: Terraform Destroy
+# Plans with -destroy flag and applies to tear down infrastructure
+parameters:
+  - name: workingDirectory
+    type: string
+  - name: tfvarsFile
+    type: string
+  - name: backendBucket
+    type: string
+  - name: backendPrefix
+    type: string
+  - name: credentialsFile
+    type: string
+    default: '$(Agent.TempDirectory)/gcp-key.json'
+  - name: extraVars
+    type: string
+    default: ''
+
+steps:
+  - task: Bash@3
+    displayName: 'Write GCP credentials file'
+    inputs:
+      targetType: inline
+      script: echo '$(GCP_SA_KEY)' > ${{ parameters.credentialsFile }}
+
+  - task: TerraformInstaller@1
+    displayName: 'Install Terraform 1.14.6'
+    inputs:
+      terraformVersion: "1.14.6"
+
+  - task: Bash@3
+    displayName: 'Terraform Init'
+    inputs:
+      targetType: inline
+      workingDirectory: ${{ parameters.workingDirectory }}
+      script: |
+        export GOOGLE_APPLICATION_CREDENTIALS="${{ parameters.credentialsFile }}"
+        terraform init -input=false \
+          -backend-config="bucket=${{ parameters.backendBucket }}" \
+          -backend-config="prefix=${{ parameters.backendPrefix }}" \
+          -backend-config="credentials=${{ parameters.credentialsFile }}"
+
+  - task: Bash@3
+    displayName: 'Terraform Plan (destroy)'
+    inputs:
+      targetType: inline
+      workingDirectory: ${{ parameters.workingDirectory }}
+      script: |
+        export GOOGLE_APPLICATION_CREDENTIALS="${{ parameters.credentialsFile }}"
+        terraform plan -input=false -destroy \
+          -var-file="${{ parameters.tfvarsFile }}" \
+          -var="credentials_file=${{ parameters.credentialsFile }}" \
+          ${{ parameters.extraVars }} \
+          -out=tfplan
+
+  - task: Bash@3
+    displayName: 'Terraform Destroy'
+    inputs:
+      targetType: inline
+      workingDirectory: ${{ parameters.workingDirectory }}
+      script: |
+        export GOOGLE_APPLICATION_CREDENTIALS="${{ parameters.credentialsFile }}"
+        terraform apply tfplan

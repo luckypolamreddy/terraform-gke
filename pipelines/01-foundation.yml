@@ -1,5 +1,10 @@
 # Pipeline: Foundation (VPC, GCS Bucket, Secret Manager)
 # These resources persist across cluster lifecycles
+#
+# Stages:
+#   1. Plan (always runs) - dry run showing what would change
+#   2. Apply (only when action=apply) - creates/updates infrastructure
+#   3. Destroy (only when action=destroy) - tears down infrastructure
 
 trigger: none
 
@@ -34,12 +39,16 @@ variables:
   - group: gcp-credentials-${{ parameters.project }}
   # Variable group should contain: GCP_SA_KEY, TF_STATE_BUCKET
 
+pool:
+  vmImage: 'ubuntu-latest'
+
 stages:
-  - stage: Foundation
-    displayName: 'Foundation - ${{ parameters.action }}'
+  # Stage 1: Plan (always runs - dry run)
+  - stage: Plan
+    displayName: 'Terraform Plan (dry run)'
     jobs:
-      - deployment: TerraformFoundation
-        displayName: 'Terraform Foundation'
+      - deployment: TerraformPlan
+        displayName: 'Terraform Plan'
         environment: '${{ parameters.project }}-foundation'
         strategy:
           runOnce:
@@ -47,7 +56,6 @@ stages:
               steps:
                 - checkout: self
 
-                # Build extra -var flags from pipeline parameters
                 - task: Bash@3
                   name: buildVars
                   displayName: 'Build variable overrides'
@@ -63,9 +71,84 @@ stages:
                       fi
                       echo "##vso[task.setvariable variable=EXTRA_VARS;isOutput=true]$EXTRA"
 
-                - template: templates/terraform-steps.yml
+                - template: templates/terraform-plan-steps.yml
                   parameters:
-                    action: ${{ parameters.action }}
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/foundation'
+                    tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/foundation.tfvars'
+                    backendBucket: '$(TF_STATE_BUCKET)'
+                    backendPrefix: 'foundation/${{ parameters.project }}'
+                    extraVars: '$(buildVars.EXTRA_VARS)'
+
+  # Stage 2: Apply (only when action=apply)
+  - stage: Apply
+    displayName: 'Terraform Apply'
+    dependsOn: Plan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'))
+    jobs:
+      - deployment: TerraformApply
+        displayName: 'Terraform Apply'
+        environment: '${{ parameters.project }}-foundation'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: Bash@3
+                  name: buildVars
+                  displayName: 'Build variable overrides'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      EXTRA=""
+                      if [ -n "${{ parameters.vpcName }}" ]; then
+                        EXTRA="$EXTRA -var=vpc_name=${{ parameters.vpcName }}"
+                      fi
+                      if [ -n "${{ parameters.gcsBucketName }}" ]; then
+                        EXTRA="$EXTRA -var=gcs_bucket_name=${{ parameters.gcsBucketName }}"
+                      fi
+                      echo "##vso[task.setvariable variable=EXTRA_VARS;isOutput=true]$EXTRA"
+
+                - template: templates/terraform-apply-steps.yml
+                  parameters:
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/foundation'
+                    tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/foundation.tfvars'
+                    backendBucket: '$(TF_STATE_BUCKET)'
+                    backendPrefix: 'foundation/${{ parameters.project }}'
+                    extraVars: '$(buildVars.EXTRA_VARS)'
+
+  # Stage 3: Destroy (only when action=destroy)
+  - stage: Destroy
+    displayName: 'Terraform Destroy'
+    dependsOn: Plan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'destroy'))
+    jobs:
+      - deployment: TerraformDestroy
+        displayName: 'Terraform Destroy'
+        environment: '${{ parameters.project }}-foundation'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: Bash@3
+                  name: buildVars
+                  displayName: 'Build variable overrides'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      EXTRA=""
+                      if [ -n "${{ parameters.vpcName }}" ]; then
+                        EXTRA="$EXTRA -var=vpc_name=${{ parameters.vpcName }}"
+                      fi
+                      if [ -n "${{ parameters.gcsBucketName }}" ]; then
+                        EXTRA="$EXTRA -var=gcs_bucket_name=${{ parameters.gcsBucketName }}"
+                      fi
+                      echo "##vso[task.setvariable variable=EXTRA_VARS;isOutput=true]$EXTRA"
+
+                - template: templates/terraform-destroy-steps.yml
+                  parameters:
                     workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/foundation'
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/foundation.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'

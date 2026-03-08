@@ -1,5 +1,10 @@
 # Pipeline: GKE Cluster + Subnet
 # Subnet is tied to cluster lifecycle - both created/destroyed together
+#
+# Stages:
+#   1. Plan (always runs) - dry run showing what would change
+#   2. Apply (only when action=apply) - creates/updates infrastructure
+#   3. Destroy (only when action=destroy) - tears down infrastructure
 
 trigger: none
 
@@ -27,12 +32,16 @@ parameters:
 variables:
   - group: gcp-credentials-${{ parameters.project }}
 
+pool:
+  vmImage: 'ubuntu-latest'
+
 stages:
-  - stage: Cluster
-    displayName: 'Cluster - ${{ parameters.action }}'
+  # Stage 1: Plan (always runs - dry run)
+  - stage: Plan
+    displayName: 'Terraform Plan (dry run)'
     jobs:
-      - deployment: TerraformCluster
-        displayName: 'Terraform Cluster'
+      - deployment: TerraformPlan
+        displayName: 'Terraform Plan'
         environment: '${{ parameters.project }}-cluster'
         strategy:
           runOnce:
@@ -40,9 +49,54 @@ stages:
               steps:
                 - checkout: self
 
-                - template: templates/terraform-steps.yml
+                - template: templates/terraform-plan-steps.yml
                   parameters:
-                    action: ${{ parameters.action }}
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/cluster'
+                    tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/cluster.tfvars'
+                    backendBucket: '$(TF_STATE_BUCKET)'
+                    backendPrefix: 'cluster/${{ parameters.project }}/${{ parameters.clusterName }}'
+                    extraVars: '-var=cluster_name=${{ parameters.clusterName }}'
+
+  # Stage 2: Apply (only when action=apply)
+  - stage: Apply
+    displayName: 'Terraform Apply'
+    dependsOn: Plan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'))
+    jobs:
+      - deployment: TerraformApply
+        displayName: 'Terraform Apply'
+        environment: '${{ parameters.project }}-cluster'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - template: templates/terraform-apply-steps.yml
+                  parameters:
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/cluster'
+                    tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/cluster.tfvars'
+                    backendBucket: '$(TF_STATE_BUCKET)'
+                    backendPrefix: 'cluster/${{ parameters.project }}/${{ parameters.clusterName }}'
+                    extraVars: '-var=cluster_name=${{ parameters.clusterName }}'
+
+  # Stage 3: Destroy (only when action=destroy)
+  - stage: Destroy
+    displayName: 'Terraform Destroy'
+    dependsOn: Plan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'destroy'))
+    jobs:
+      - deployment: TerraformDestroy
+        displayName: 'Terraform Destroy'
+        environment: '${{ parameters.project }}-cluster'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - template: templates/terraform-destroy-steps.yml
+                  parameters:
                     workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/cluster'
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/cluster.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'

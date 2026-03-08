@@ -1,10 +1,6 @@
-# Reusable template for Terraform init, plan, apply/destroy
+# Template: Terraform Plan (dry run)
+# Shows what would change without making any modifications
 parameters:
-  - name: action
-    type: string
-    values:
-      - apply
-      - destroy
   - name: workingDirectory
     type: string
   - name: tfvarsFile
@@ -42,10 +38,8 @@ steps:
         git log --oneline -1
         echo "=== Terraform files in working directory ==="
         ls -la *.tf
-        echo "=== locals block (should show backup_plan_name auto-generation) ==="
+        echo "=== locals block ==="
         grep -A3 'locals' main.tf || echo "No locals block found"
-        echo "=== Root variables (should NOT contain backup_plan_name) ==="
-        grep 'variable.*backup_plan_name' variables.tf && echo "ERROR: backup_plan_name is still a root variable!" || echo "OK: backup_plan_name is not a root variable"
 
   - task: Bash@3
     displayName: 'Terraform Init'
@@ -60,30 +54,13 @@ steps:
           -backend-config="credentials=${{ parameters.credentialsFile }}"
 
   - task: Bash@3
-    displayName: 'Terraform Plan (${{ parameters.action }})'
+    displayName: 'Terraform Plan (dry run)'
     inputs:
       targetType: inline
       workingDirectory: ${{ parameters.workingDirectory }}
       script: |
         export GOOGLE_APPLICATION_CREDENTIALS="${{ parameters.credentialsFile }}"
-        DESTROY_FLAG=""
-        if [ "${{ parameters.action }}" = "destroy" ]; then
-          DESTROY_FLAG="-destroy"
-        fi
-
         terraform plan -input=false \
           -var-file="${{ parameters.tfvarsFile }}" \
           -var="credentials_file=${{ parameters.credentialsFile }}" \
-          ${{ parameters.extraVars }} \
-          $DESTROY_FLAG \
-          -out=tfplan
-
-  - ${{ if ne(parameters.action, 'plan') }}:
-    - task: Bash@3
-      displayName: 'Terraform ${{ parameters.action }}'
-      inputs:
-        targetType: inline
-        workingDirectory: ${{ parameters.workingDirectory }}
-        script: |
-          export GOOGLE_APPLICATION_CREDENTIALS="${{ parameters.credentialsFile }}"
-          terraform apply tfplan
+          ${{ parameters.extraVars }}

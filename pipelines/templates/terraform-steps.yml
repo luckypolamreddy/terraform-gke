@@ -29,13 +29,28 @@ steps:
       script: echo '$(GCP_SA_KEY)' > ${{ parameters.credentialsFile }}
 
   - task: Bash@3
+    displayName: 'Debug: Show checked-out code'
+    inputs:
+      targetType: inline
+      workingDirectory: ${{ parameters.workingDirectory }}
+      script: |
+        echo "=== Git commit ==="
+        git log --oneline -1
+        echo "=== Terraform files in working directory ==="
+        ls -la *.tf
+        echo "=== locals block (should show backup_plan_name auto-generation) ==="
+        grep -A3 'locals' main.tf || echo "No locals block found"
+        echo "=== Root variables (should NOT contain backup_plan_name) ==="
+        grep 'variable.*backup_plan_name' variables.tf && echo "ERROR: backup_plan_name is still a root variable!" || echo "OK: backup_plan_name is not a root variable"
+
+  - task: Bash@3
     displayName: 'Terraform Init'
     inputs:
       targetType: inline
       workingDirectory: ${{ parameters.workingDirectory }}
       script: |
         export GOOGLE_APPLICATION_CREDENTIALS="${{ parameters.credentialsFile }}"
-        terraform init \
+        terraform init -input=false \
           -backend-config="bucket=${{ parameters.backendBucket }}" \
           -backend-config="prefix=${{ parameters.backendPrefix }}" \
           -backend-config="credentials=${{ parameters.credentialsFile }}"
@@ -52,7 +67,7 @@ steps:
           DESTROY_FLAG="-destroy"
         fi
 
-        terraform plan \
+        terraform plan -input=false \
           -var-file="${{ parameters.tfvarsFile }}" \
           -var="credentials_file=${{ parameters.credentialsFile }}" \
           ${{ parameters.extraVars }} \

@@ -1,18 +1,18 @@
 # ============================================================
-# Project A - Foundation Configuration
+# pg-us-e-app-012345 - Foundation Configuration
 # ============================================================
 
-project_id            = "project-a-id"
+project_id            = "pg-us-e-app-012345"
 region                = "us-east1"
-service_account_email = "terraform-sa@project-a-id.iam.gserviceaccount.com"
+service_account_email = "terraform-sa@pg-us-e-app-012345.iam.gserviceaccount.com"
 
 # VPC
-vpc_name        = "project-a-vpc"
+vpc_name        = "pg-us-e-app-012345-vpc"
 routing_mode    = "REGIONAL"
-vpc_description = "VPC for Project A GKE clusters"
+vpc_description = "VPC for pg-us-e-app-012345 GKE clusters"
 
-# GCS Bucket (for ECK snapshots and app configs)
-gcs_bucket_name       = "project-a-eck-snapshots"
+# GCS Bucket
+gcs_bucket_name       = "pg-us-e-app-012345-eck-snapshots"
 gcs_storage_class     = "STANDARD"
 gcs_force_destroy     = false
 gcs_enable_versioning = true

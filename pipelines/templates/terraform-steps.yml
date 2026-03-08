@@ -3,6 +3,7 @@ parameters:
   - name: action
     type: string
     values:
+      - plan
       - apply
       - destroy
   - name: workingDirectory
@@ -58,11 +59,12 @@ steps:
           $DESTROY_FLAG \
           -out=tfplan
 
-  - task: Bash@3
-    displayName: 'Terraform ${{ parameters.action }}'
-    inputs:
-      targetType: inline
-      workingDirectory: ${{ parameters.workingDirectory }}
-      script: |
-        export GOOGLE_APPLICATION_CREDENTIALS="${{ parameters.credentialsFile }}"
-        terraform apply tfplan
+  - ${{ if ne(parameters.action, 'plan') }}:
+    - task: Bash@3
+      displayName: 'Terraform ${{ parameters.action }}'
+      inputs:
+        targetType: inline
+        workingDirectory: ${{ parameters.workingDirectory }}
+        script: |
+          export GOOGLE_APPLICATION_CREDENTIALS="${{ parameters.credentialsFile }}"
+          terraform apply tfplan

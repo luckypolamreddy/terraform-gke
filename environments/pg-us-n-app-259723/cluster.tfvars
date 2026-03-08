@@ -1,23 +1,24 @@
 # ============================================================
-# Project B - Cluster Configuration (shared by all clusters)
+# pg-us-n-app-259723 - Cluster Configuration (shared by all clusters)
 # ============================================================
 
-project_id = "project-b-id"
+project_id = "pg-us-n-app-259723"
 region     = "us-east1"
 location   = "us-east1"
 
 # Network (subnet_name is auto-generated as <cluster_name>-subnet-01)
-vpc_self_link = "projects/project-b-id/global/networks/project-b-vpc"
-subnet_cidr   = "10.20.0.0/20"
-pods_cidr     = "10.20.16.0/20"
-services_cidr = "10.20.32.0/20"
+vpc_self_link = "projects/pg-us-n-app-259723/global/networks/pg-us-n-app-259723-vpc"
+subnet_cidr   = "10.10.0.0/20"
+pods_cidr     = "10.10.16.0/20"
+services_cidr = "10.10.32.0/20"
 
 # Cluster (cluster_name is provided at pipeline runtime)
 kubernetes_version = "1.30"
 
+# Access - DNS only, no public IP
 enable_dns_access_only = true
 
-# Maintenance
+# Maintenance - Saturday 1 AM EST (6 AM UTC)
 maintenance_start_time = "2024-01-06T06:00:00Z"
 maintenance_end_time   = "2024-01-06T10:00:00Z"
 maintenance_recurrence = "FREQ=WEEKLY;BYDAY=SA"
@@ -28,9 +29,11 @@ enable_backup              = true
 enable_cost_allocation     = true
 enable_managed_prometheus  = true
 
+# Logging - workloads only
 logging_components    = ["WORKLOADS"]
 monitoring_components = ["SYSTEM_COMPONENTS"]
 
+# Usage metering (set BigQuery dataset ID, leave empty to disable)
 usage_metering_dataset_id      = "gke_usage_metering"
 enable_network_egress_metering = false
 

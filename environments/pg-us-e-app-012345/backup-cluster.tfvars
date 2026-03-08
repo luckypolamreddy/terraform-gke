@@ -1,11 +1,11 @@
 # ============================================================
-# Project B - Backup Plan Configuration (shared by all clusters)
+# pg-us-e-app-012345 - Backup Plan Configuration (shared by all clusters)
 # ============================================================
 # cluster_name is provided at pipeline runtime
 # cluster_id is auto-generated as projects/<project>/locations/<location>/clusters/<cluster_name>
-# backup_plan_name is auto-generated as <cluster_name>-backup
+# backup_plan_name is auto-generated as <cluster_name>-backup-01
 
-project_id = "project-b-id"
+project_id = "pg-us-e-app-012345"
 region     = "us-east1"
 location   = "us-east1"
 

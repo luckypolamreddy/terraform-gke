@@ -16,10 +16,10 @@ parameters:
   - name: project
     displayName: 'GCP Project'
     type: string
-    default: project-a
+    default: pg-us-n-app-259723
     values:
-      - project-a
-      - project-b
+      - pg-us-n-app-259723
+      - pg-us-e-app-012345
 
   - name: clusterName
     displayName: 'GKE Cluster Name'

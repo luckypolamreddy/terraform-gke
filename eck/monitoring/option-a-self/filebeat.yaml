@@ -9,7 +9,7 @@ spec:
   elasticsearchRef:
     name: ${ES_CLUSTER_NAME}
   kibanaRef:
-    name: ${ES_CLUSTER_NAME}
+    name: ${KIBANA_NAME}
   config:
     filebeat.inputs:
       # Elasticsearch logs
@@ -25,7 +25,7 @@ spec:
       # Kibana logs
       - type: container
         paths:
-          - /var/log/containers/${ES_CLUSTER_NAME}-kb-*.log
+          - /var/log/containers/${KIBANA_NAME}-kb-*.log
         processors:
           - add_kubernetes_metadata:
               host: ${NODE_NAME}
@@ -59,10 +59,6 @@ spec:
       spec:
         serviceAccountName: filebeat
         automountServiceAccountToken: true
-        tolerations:
-          - key: "elastic-role"
-            operator: "Exists"
-            effect: "NoSchedule"
         containers:
           - name: filebeat
             env:

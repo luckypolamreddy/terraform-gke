@@ -1,5 +1,5 @@
-# Enable Stack Monitoring in the Elasticsearch cluster
-# This patches the existing Elasticsearch resource to enable self-monitoring
+# Enable Stack Monitoring - patches existing ES and Kibana to send metrics/logs to self
+# Uses strategic merge patch to only update the monitoring section without touching other fields
 apiVersion: elasticsearch.k8s.elastic.co/v1
 kind: Elasticsearch
 metadata:
@@ -17,7 +17,7 @@ spec:
 apiVersion: kibana.k8s.elastic.co/v1
 kind: Kibana
 metadata:
-  name: ${ES_CLUSTER_NAME}
+  name: ${KIBANA_NAME}
   namespace: elastic-stack
 spec:
   monitoring:

@@ -9,7 +9,7 @@ spec:
   elasticsearchRef:
     name: ${ES_CLUSTER_NAME}
   kibanaRef:
-    name: ${ES_CLUSTER_NAME}
+    name: ${KIBANA_NAME}
   config:
     metricbeat.modules:
       # Elasticsearch module
@@ -35,7 +35,7 @@ spec:
         xpack.enabled: true
         period: 10s
         hosts:
-          - "https://${ES_CLUSTER_NAME}-kb-http.elastic-stack.svc:5601"
+          - "https://${KIBANA_NAME}-kb-http.elastic-stack.svc:5601"
         username: "${MONITORING_USER}"
         password: "${MONITORING_PASSWORD}"
         ssl.verification_mode: "none"
@@ -62,22 +62,6 @@ spec:
       spec:
         serviceAccountName: metricbeat
         automountServiceAccountToken: true
-        # Run on controlplane-pool (no taints)
-        affinity:
-          nodeAffinity:
-            preferredDuringSchedulingIgnoredDuringExecution:
-              - weight: 100
-                preference:
-                  matchExpressions:
-                    - key: role
-                      operator: In
-                      values:
-                        - controlplane
-        # Also tolerate elastic node taints to collect metrics from all nodes
-        tolerations:
-          - key: "elastic-role"
-            operator: "Exists"
-            effect: "NoSchedule"
         containers:
           - name: metricbeat
             resources:

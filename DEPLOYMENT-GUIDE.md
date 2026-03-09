@@ -44,7 +44,7 @@ GCP Project (per environment)
                       │    └── ECK Operator (elastic-operator deployment)
                       └── elastic-stack namespace
                            ├── Elasticsearch  (3 pods — master+data+ingest)
-                           └── Kibana         (3 pods)
+                           └── Kibana         (2 pods)
 ```
 
 ---
@@ -92,11 +92,13 @@ GCP Project (per environment)
 | **ECK Operator**      | `9.3.1`               | `9.3.1`               |
 | **ES Nodes**          | 3                     | 3                     |
 | **ES Roles**          | master + data + ingest + transform | master + data + ingest + transform |
-| **ES Memory**         | `48Gi`                | `48Gi`                |
-| **ES CPU**            | `8`                   | `8`                   |
-| **ES JVM Heap**       | `24g` (default)       | `24g` (default)       |
+| **ES Memory (request)**| `16Gi`               | `16Gi`                |
+| **ES Memory (max)**   | `32Gi`                | `32Gi`                |
+| **ES CPU (request)**  | `8`                   | `8`                   |
+| **ES CPU (max)**      | `12`                  | `12`                  |
+| **ES JVM Heap**       | `8g` (default)        | `8g` (default)        |
 | **ES Storage**        | `500Gi` per pod (pd-ssd) | `500Gi` per pod (pd-ssd) |
-| **Kibana Replicas**   | 3                     | 3                     |
+| **Kibana Replicas**   | 2                     | 2                     |
 | **Kibana Memory**     | `4Gi`                 | `4Gi`                 |
 | **Kibana CPU**        | `2`                   | `2`                   |
 | **ES Endpoint**       | External LoadBalancer  | External LoadBalancer  |
@@ -120,9 +122,6 @@ Each environment requires a variable group named `gcp-credentials-<project>` in 
 | `GCP_SA_KEY`           | Full JSON content of the GCP service account key        | `{ "type": "service_account", ... }`        |
 | `GCP_PROJECT_ID`       | GCP project ID                                          | `pg-us-n-app-259723`                        |
 | `TF_STATE_BUCKET`      | GCS bucket storing Terraform remote state               | `pg-us-n-app-259723-tf-state`               |
-| `KIBANA_ENCRYPTION_KEY`| 32+ char random string for Kibana security keys         | Generate: `openssl rand -base64 32`         |
-
-> **Important:** `KIBANA_ENCRYPTION_KEY` must be at least 32 characters. The same value is used for `xpack.security.encryptionKey`, `xpack.encryptedSavedObjects.encryptionKey`, and `xpack.reporting.encryptionKey`. Never change it after Kibana is running — saved objects will become unreadable.
 
 ### 3.2 Run Pipeline 01 — Foundation (one-time per environment)
 
@@ -132,7 +131,6 @@ Pipeline `01-foundation.yml` creates persistent infrastructure that survives clu
 |-------------------|--------------------------------------------|---------------------------------------------|
 | VPC               | `pg-us-n-app-259723-vpc`                   | `pg-us-e-app-012345-vpc`                    |
 | GCS Bucket        | `pg-us-n-app-259723-eck-snapshots`         | `pg-us-e-app-012345-eck-snapshots`          |
-| Secret Manager    | `kibana-credentials`, `elastic-credentials`| `kibana-credentials`, `elastic-credentials` |
 
 ### 3.3 GCP Service Account Permissions
 
@@ -141,7 +139,6 @@ The Terraform SA (`terraform-sa@<project>.iam.gserviceaccount.com`) must have:
 - `roles/container.admin` — Create/manage GKE clusters
 - `roles/compute.networkAdmin` — Create subnets
 - `roles/storage.admin` — Create GCS buckets
-- `roles/secretmanager.admin` — Create secrets
 - `roles/iam.serviceAccountUser` — Impersonate for node pool SA
 
 ### 3.4 ADO Environment Approvals (optional but recommended for prod)
@@ -316,9 +313,9 @@ kubectl get nodes -o wide
 |---------------|--------|----------------------|----------|-------------------------------------------|
 | `project`     | string | `pg-us-n-app-259723` | Yes      | Target GCP project / environment          |
 | `clusterName` | string | *(none)*             | **Yes**  | GKE cluster name (must already exist)     |
-| `esJvmHeap`   | string | `24g`                | Yes      | JVM heap for each Elasticsearch pod       |
+| `esJvmHeap`   | string | `8g`                 | Yes      | JVM heap for each Elasticsearch pod       |
 
-> **JVM Heap Rule:** Always set to **50% of the container memory limit**. Container memory is hardcoded to `48Gi`. Therefore the correct value is `24g`. Do not exceed `26g` (ES compressed oops limit). See [Section 6](#6-jvm-sizing-reference) for full sizing table.
+> **JVM Heap Rule:** Always set to **50% of the container memory request**. Container memory request is `16Gi`, so the default is `8g`. Never exceed `32g`. See [Section 6](#6-jvm-sizing-reference) for full sizing table.
 
 ### 5.3 Fixed Pipeline Variables (not user-configurable at runtime)
 
@@ -367,7 +364,6 @@ These are defined in the pipeline YAML and must be updated in source control to 
 │  ─ Setup Snapshot Repository + SLM Policy  (K8s Job)              │
 │  ─ Setup Index Settings                    (K8s Job)              │
 │  ─ Wait for setup Jobs to complete                                 │
-│  ─ Sync credentials → GCP Secret Manager                          │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -404,7 +400,7 @@ Variables substituted at deploy time:
 |-------------------|---------------------------|------------------------|
 | `${ES_CLUSTER_NAME}` | Pipeline variable      | `elasticsearch`        |
 | `${ES_VERSION}`   | Pipeline variable         | `9.3.1`                |
-| `${ES_JVM_HEAP}`  | **User parameter**        | `24g` (default)        |
+| `${ES_JVM_HEAP}`  | **User parameter**        | `8g` (default)         |
 
 Full specification deployed:
 
@@ -415,9 +411,11 @@ Full specification deployed:
 | Namespace             | `elastic-stack`                                               |
 | Node count            | 3                                                             |
 | Node roles            | `master`, `data`, `data_content`, `data_hot`, `ingest`, `transform` |
-| Memory limit/request  | `48Gi`                                                        |
+| Memory request        | `16Gi`                                                        |
+| Memory limit          | `32Gi`                                                        |
 | CPU request           | `8`                                                           |
-| JVM heap (`-Xms/-Xmx`)| `${ES_JVM_HEAP}` — default `24g`                             |
+| CPU limit             | `12`                                                          |
+| JVM heap (`-Xms/-Xmx`)| `${ES_JVM_HEAP}` — default `8g`                              |
 | `node.store.allow_mmap`| `false` (GKE restriction — mmap disabled)                   |
 | `vm.max_map_count`    | Set to `262144` by privileged init container (`sysctl`)       |
 | PVC per pod           | `500Gi`, `pd-ssd`, `premium-rwo` StorageClass, `ReadWriteOnce`|
@@ -437,9 +435,6 @@ Variables substituted at deploy time:
 | `${ES_CLUSTER_NAME}`      | Pipeline variable  | `elasticsearch`                                |
 | `${ES_VERSION}`           | Pipeline variable  | `9.3.1`                                        |
 | `${KIBANA_EXTERNAL_HOST}` | Pipeline (auto)    | `kibana.<project>.example.com`                 |
-| `${KIBANA_ENCRYPTION_KEY}`| ADO variable group | From `KIBANA_ENCRYPTION_KEY` secret            |
-| `${KIBANA_SAVED_OBJECTS_KEY}` | ADO variable group | Same as `KIBANA_ENCRYPTION_KEY`          |
-| `${KIBANA_REPORTING_KEY}` | ADO variable group | Same as `KIBANA_ENCRYPTION_KEY`                |
 
 Full specification deployed:
 
@@ -448,12 +443,11 @@ Full specification deployed:
 | Kind                  | `Kibana` (ECK CRD)                         |
 | Name                  | `kibana`                                   |
 | Namespace             | `elastic-stack`                            |
-| Replica count         | `3`                                        |
+| Replica count         | `2`                                        |
 | Memory limit/request  | `4Gi`                                      |
 | CPU request           | `2`                                        |
 | ES reference          | `elasticsearch` (auto-discovers ES service)|
 | server.name           | `kibana`                                   |
-| Encryption keys       | 32+ char key from `KIBANA_ENCRYPTION_KEY`  |
 | Stack monitoring      | `monitoring.kibana.collection.enabled: true`|
 | HTTP service type     | `LoadBalancer` (external IP)               |
 | TLS                   | Self-signed certificate (ECK-managed)      |
@@ -490,25 +484,6 @@ Runs as a Kubernetes Job (`setup-snapshot-repo`) in `elastic-stack`. The job:
 Runs as a Kubernetes Job (`setup-index-settings`) in `elastic-stack`.
 Sets default index templates/settings for the cluster.
 
-#### Credential Sync to Secret Manager
-
-After ES and Kibana are healthy, the pipeline:
-1. Reads the `elastic` user password from the ECK-generated secret `elasticsearch-es-elastic-user`
-2. Gets the Kibana LoadBalancer external IP from `kibana-kb-http` service
-3. Gets the ES LoadBalancer external IP from `elasticsearch-es-http` service
-4. Writes a JSON blob to GCP Secret Manager:
-
-```json
-{
-  "username": "elastic",
-  "password": "<auto-generated>",
-  "kibana_url": "https://<kibana-lb-ip>:5601",
-  "elasticsearch_url": "https://<es-lb-ip>:9200"
-}
-```
-
-Secret is stored in either `kibana-credentials` or `elastic-credentials` (whichever exists first).
-
 ### 5.8 Step-by-Step: Running the ECK Pipeline
 
 1. Confirm Pipeline 02 completed successfully and nodes are Ready
@@ -520,7 +495,7 @@ Secret is stored in either `kibana-credentials` or `elastic-credentials` (whiche
    |--------------|----------------------|-----------------------|
    | GCP Project  | `pg-us-n-app-259723` | `pg-us-e-app-012345`  |
    | Cluster Name | `eck-dev-01`         | `eck-prod-01`         |
-   | ES JVM Heap  | `24g`                | `24g`                 |
+   | ES JVM Heap  | `8g`                 | `8g`                  |
 
 5. Monitor stages sequentially — each stage must pass before the next starts
 6. Total runtime: ~20–35 minutes (most time is waiting for ES green)
@@ -542,48 +517,47 @@ Secret is stored in either `kibana-credentials` or `elastic-credentials` (whiche
 
 ### 6.1 Rules
 
-1. **JVM heap = 50% of container memory** — standard Elasticsearch best practice
-2. **Never exceed 26g** — above this, the JVM disables compressed object pointers (oops), which wastes memory and degrades performance
-3. **`-Xms` must equal `-Xmx`** — prevents heap resizing at runtime
-4. Memory limit = memory request (guaranteed QoS class in Kubernetes)
+1. **JVM heap = 50% of container memory request** — standard Elasticsearch best practice
+2. **Never exceed 32g** — keep heap within reasonable bounds for performance
+3. **Minimum 8g** — the default and minimum recommended heap size
+4. **`-Xms` must equal `-Xmx`** — prevents heap resizing at runtime
 
 ### 6.2 JVM Sizing Table by Machine Type
 
-| Machine Type    | vCPU | Node RAM | Container Memory (`48Gi`) | JVM Heap | Remaining for OS/k8s |
-|-----------------|------|----------|--------------------------|----------|----------------------|
-| `n1-highmem-4`  | 4    | 26 GB    | — (not enough)           | —        | —                    |
-| `n1-highmem-8`  | 8    | 52 GB    | `24Gi`                   | `12g`    | ~28 GB               |
-| **`n1-highmem-16`** | **16** | **104 GB** | **`48Gi`**         | **`24g`**| **~52 GB** ✓ current |
-| `n1-highmem-32` | 32   | 208 GB   | `48Gi` or `96Gi`         | `24g` or `26g` (max) | large headroom |
-| `n1-highmem-64` | 64   | 416 GB   | `48Gi`                   | `24g`    | large headroom       |
+| Machine Type    | vCPU | Node RAM | Container Memory (req/limit) | JVM Heap | Remaining for OS/k8s |
+|-----------------|------|----------|------------------------------|----------|----------------------|
+| `n1-highmem-4`  | 4    | 26 GB    | — (not enough)               | —        | —                    |
+| `n1-highmem-8`  | 8    | 52 GB    | `16Gi / 32Gi`                | `8g`     | ~20 GB               |
+| **`n1-highmem-16`** | **16** | **104 GB** | **`16Gi / 32Gi`**    | **`8g`** | **~72 GB** ✓ current |
+| `n1-highmem-32` | 32   | 208 GB   | `16Gi / 32Gi`                | `8g`–`16g` | large headroom    |
+| `n1-highmem-64` | 64   | 416 GB   | `16Gi / 32Gi`                | `8g`–`16g` | large headroom    |
 
 ### 6.3 Current Configuration
 
 ```
 Node: n1-highmem-16
 Node RAM: 104 GB
-├── Elasticsearch pod:  48Gi memory limit  │  JVM: -Xms24g -Xmx24g  │  CPU: 8
-├── Kibana pod:          4Gi memory limit  │                          │  CPU: 2
+├── Elasticsearch pod:  16Gi request / 32Gi limit  │  JVM: -Xms8g -Xmx8g  │  CPU: 8 req / 12 limit
+├── Kibana pod:          4Gi memory limit           │                        │  CPU: 2
 ├── kube-system:        ~2 GB reserved
-└── Available headroom: ~50 GB
+└── Available headroom: ~66 GB
 ```
 
 ### 6.4 Changing JVM Heap
 
-**If container memory stays at `48Gi`:** Always use `24g` (do not change).
+**If container memory request stays at `16Gi`:** Use `8g` (default).
 
 **If you change container memory in `eck/04-elasticsearch.yaml`:**
 
-| New Container Memory | New JVM Heap (50%) |
-|---------------------|--------------------|
-| `16Gi`              | `8g`               |
-| `24Gi`              | `12g`              |
-| `32Gi`              | `16g`              |
-| `48Gi`              | `24g` ← current    |
-| `52Gi`              | `26g` ← maximum    |
-| `>52Gi`             | **cap at `26g`**   |
+| New Container Memory (request) | New JVM Heap (50%) |
+|-------------------------------|---------------------|
+| `16Gi`                        | `8g` ← current      |
+| `24Gi`                        | `12g`               |
+| `32Gi`                        | `16g`               |
+| `64Gi`                        | `32g` ← maximum     |
+| `>64Gi`                       | **cap at `32g`**    |
 
-To change: update `memory: 48Gi` in `eck/04-elasticsearch.yaml`, then pass new heap value in the `esJvmHeap` pipeline parameter.
+To change: update memory in `eck/04-elasticsearch.yaml`, then pass new heap value in the `esJvmHeap` pipeline parameter.
 
 ---
 
@@ -600,22 +574,22 @@ Each `n1-highmem-16` node runs exactly:
 │                                                          │
 │  ┌─────────────────────────────────────────────────────┐ │
 │  │  Elasticsearch pod                                  │ │
-│  │  memory: 48Gi (request = limit)                     │ │
-│  │  cpu:    8 (request)                                │ │
-│  │  JVM:    -Xms24g -Xmx24g                           │ │
+│  │  memory: 16Gi request / 32Gi limit                  │ │
+│  │  cpu:    8 request / 12 limit                       │ │
+│  │  JVM:    -Xms8g -Xmx8g                             │ │
 │  │  PVC:    500Gi pd-ssd (dev) / 1000Gi pd-ssd (prod) │ │
 │  └─────────────────────────────────────────────────────┘ │
 │  ┌─────────────────────────────────────────────────────┐ │
-│  │  Kibana pod                                         │ │
+│  │  Kibana pod  (2 replicas across cluster, not per node)│
 │  │  memory: 4Gi (request = limit)                      │ │
 │  │  cpu:    2 (request)                                │ │
 │  └─────────────────────────────────────────────────────┘ │
 │                                                          │
-│  Used:      52Gi RAM  │  10 CPU                          │
-│  Available: 52Gi RAM  │   6 CPU  (system + headroom)     │
+│  Reserved:  20Gi RAM  │  10 CPU  (requests)              │
+│  Available: 84Gi RAM  │   6 CPU  (system + headroom)     │
 └──────────────────────────────────────────────────────────┘
 Replicated across 3 zones (us-east1-b, c, d)
-Total cluster: 144Gi RAM for ES │ 12Gi RAM for Kibana
+Total cluster: 3 ES pods (16Gi req each) │ 2 Kibana pods (4Gi each)
 ```
 
 ---
@@ -679,7 +653,7 @@ kubectl get elasticsearch,kibana -n elastic-stack
 
 # 4. Check all pods running
 kubectl get pods -n elastic-stack
-# Expect: 3 ES pods + 3 Kibana pods, all Running
+# Expect: 3 ES pods + 2 Kibana pods, all Running
 ```
 
 ### 9.2 Get Access Credentials
@@ -728,22 +702,6 @@ curl -sk -u "elastic:$ES_PASS" "https://$ES_IP:9200/_snapshot/gcs-snapshots?pret
 
 # SLM policy
 curl -sk -u "elastic:$ES_PASS" "https://$ES_IP:9200/_slm/policy/daily-snapshots?pretty"
-```
-
-### 9.5 Credentials in GCP Secret Manager
-
-After Pipeline 04 Stage 3, credentials are stored in Secret Manager:
-
-```bash
-# Dev
-gcloud secrets versions access latest \
-  --secret=kibana-credentials \
-  --project=pg-us-n-app-259723
-
-# Prod
-gcloud secrets versions access latest \
-  --secret=kibana-credentials \
-  --project=pg-us-e-app-012345
 ```
 
 ---

@@ -117,13 +117,24 @@ stages:
                 script: |
                   export USE_GKE_GCLOUD_AUTH_PLUGIN=True
 
-                  # Patch Elasticsearch to enable self-monitoring
-                  ES_PATCH='{"spec":{"monitoring":{"metrics":{"elasticsearchRefs":[{"name":"$(ES_CLUSTER_NAME)"}]},"logs":{"elasticsearchRefs":[{"name":"$(ES_CLUSTER_NAME)"}]}}}}'
-                  kubectl patch elasticsearch $(ES_CLUSTER_NAME) -n elastic-stack --type=merge -p "$ES_PATCH"
+                  ES_NAME="$(ES_CLUSTER_NAME)"
+                  KB_NAME="$(KIBANA_NAME)"
 
-                  # Patch Kibana to enable self-monitoring
-                  KB_PATCH='{"spec":{"monitoring":{"metrics":{"elasticsearchRefs":[{"name":"$(ES_CLUSTER_NAME)"}]},"logs":{"elasticsearchRefs":[{"name":"$(ES_CLUSTER_NAME)"}]}}}}'
-                  kubectl patch kibana $(KIBANA_NAME) -n elastic-stack --type=merge -p "$KB_PATCH"
+                  echo "Enabling self-monitoring on Elasticsearch: $ES_NAME"
+                  echo "Enabling self-monitoring on Kibana: $KB_NAME"
+
+                  # Remove poisoned last-applied-configuration annotation from any previous bad kubectl apply
+                  kubectl annotate elasticsearch "$ES_NAME" -n elastic-stack kubectl.kubernetes.io/last-applied-configuration- 2>/dev/null || true
+                  kubectl annotate kibana "$KB_NAME" -n elastic-stack kubectl.kubernetes.io/last-applied-configuration- 2>/dev/null || true
+
+                  # Use JSON Patch (RFC 6902) to surgically add /spec/monitoring without touching other fields
+                  MONITORING_VALUE='{"metrics":{"elasticsearchRefs":[{"name":"'"$ES_NAME"'"}]},"logs":{"elasticsearchRefs":[{"name":"'"$ES_NAME"'"}]}}'
+
+                  kubectl patch elasticsearch "$ES_NAME" -n elastic-stack --type=json \
+                    -p '[{"op":"add","path":"/spec/monitoring","value":'"$MONITORING_VALUE"'}]'
+
+                  kubectl patch kibana "$KB_NAME" -n elastic-stack --type=json \
+                    -p '[{"op":"add","path":"/spec/monitoring","value":'"$MONITORING_VALUE"'}]'
 
             - task: Bash@3
               displayName: 'Deploy Metricbeat'

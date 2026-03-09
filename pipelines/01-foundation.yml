@@ -1,10 +1,16 @@
-# Pipeline: Foundation (VPC, GCS Bucket, Secret Manager)
+# Pipeline: Foundation (VPC, GCS Bucket)
 # These resources persist across cluster lifecycles
+#
+# Actions:
+#   apply         - creates/updates all foundation infrastructure
+#   destroy-all   - tears down everything (VPC + GCS bucket)
+#   destroy-bucket - tears down only the GCS snapshot bucket
+#   destroy-vpc   - tears down only the VPC
 #
 # Stages:
 #   1. Plan (always runs) - dry run showing what would change
 #   2. Apply (only when action=apply) - creates/updates infrastructure
-#   3. Destroy (only when action=destroy) - tears down infrastructure
+#   3. Destroy (when action starts with 'destroy') - targeted teardown
 
 trigger: none
 
@@ -15,7 +21,9 @@ parameters:
     default: apply
     values:
       - apply
-      - destroy
+      - destroy-all
+      - destroy-bucket
+      - destroy-vpc
 
   - name: project
     displayName: 'GCP Project'
@@ -69,6 +77,15 @@ stages:
                       if [ -n "${{ parameters.gcsBucketName }}" ]; then
                         EXTRA="$EXTRA -var=gcs_bucket_name=${{ parameters.gcsBucketName }}"
                       fi
+
+                      # Include -target for selective destroy so plan shows correct scope
+                      ACTION="${{ parameters.action }}"
+                      if [ "$ACTION" = "destroy-bucket" ]; then
+                        EXTRA="$EXTRA -target=module.gcs_bucket"
+                      elif [ "$ACTION" = "destroy-vpc" ]; then
+                        EXTRA="$EXTRA -target=module.vpc"
+                      fi
+
                       echo "##vso[task.setvariable variable=EXTRA_VARS;isOutput=true]$EXTRA"
 
                 - template: templates/terraform-plan-steps.yml
@@ -117,14 +134,14 @@ stages:
                     backendPrefix: 'foundation/${{ parameters.project }}'
                     extraVars: '$(buildVars.EXTRA_VARS)'
 
-  # Stage 3: Destroy (only when action=destroy)
+  # Stage 3: Destroy (when action starts with 'destroy')
   - stage: Destroy
-    displayName: 'Terraform Destroy'
+    displayName: 'Terraform Destroy (${{ parameters.action }})'
     dependsOn: Plan
-    condition: and(succeeded(), eq('${{ parameters.action }}', 'destroy'))
+    condition: and(succeeded(), startsWith('${{ parameters.action }}', 'destroy'))
     jobs:
       - deployment: TerraformDestroy
-        displayName: 'Terraform Destroy'
+        displayName: 'Terraform Destroy (${{ parameters.action }})'
         environment: '${{ parameters.project }}-foundation'
         strategy:
           runOnce:
@@ -134,7 +151,7 @@ stages:
 
                 - task: Bash@3
                   name: buildVars
-                  displayName: 'Build variable overrides'
+                  displayName: 'Build variable overrides and target'
                   inputs:
                     targetType: inline
                     script: |
@@ -145,6 +162,19 @@ stages:
                       if [ -n "${{ parameters.gcsBucketName }}" ]; then
                         EXTRA="$EXTRA -var=gcs_bucket_name=${{ parameters.gcsBucketName }}"
                       fi
+
+                      # Selective destroy using -target
+                      ACTION="${{ parameters.action }}"
+                      if [ "$ACTION" = "destroy-bucket" ]; then
+                        EXTRA="$EXTRA -target=module.gcs_bucket"
+                        echo ">> Destroying GCS bucket only"
+                      elif [ "$ACTION" = "destroy-vpc" ]; then
+                        EXTRA="$EXTRA -target=module.vpc"
+                        echo ">> Destroying VPC only"
+                      else
+                        echo ">> Destroying ALL foundation resources"
+                      fi
+
                       echo "##vso[task.setvariable variable=EXTRA_VARS;isOutput=true]$EXTRA"
 
                 - template: templates/terraform-destroy-steps.yml

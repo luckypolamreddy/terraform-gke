@@ -18,9 +18,7 @@ gcs_force_destroy     = false
 gcs_enable_versioning = true
 gcs_lifecycle_rules   = []
 
-# Secret Manager
-secret_ids   = ["kibana-credentials", "elastic-credentials"]
-secret_labels = {
-  environment = "production"
-  team        = "platform"
-}
+# Secret Manager (disabled — not needed for current deployment)
+enable_secret_manager = false
+secret_ids            = []
+secret_labels         = {}

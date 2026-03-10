@@ -1,0 +1,48 @@
+Subject: ECK Deployment on GKE — Infrastructure Ready for Review
+
+Hi Team,
+
+I wanted to share an update on the Elasticsearch (ECK) deployment infrastructure we've been building on GKE. The pipelines and manifests are now complete and ready for review.
+
+What's been set up:
+
+- 6 Azure DevOps Pipelines covering the full lifecycle:
+  - 01-foundation    — VPC creation (one-time per project)
+  - 02-cluster       — GKE cluster + node pool + GCS snapshot bucket
+  - 03-backup        — GKE backup plans with pause/destroy lifecycle
+  - 04-eck-deploy    — Full ECK stack (Operator, Elasticsearch, Kibana)
+  - 05-eck-destroy   — Clean teardown of ECK stack
+  - 06-monitoring    — Self-monitoring setup
+
+Elastic Stack Specs:
+  - Elasticsearch 9.3.1 — 3 master/data nodes (16Gi memory, 8 CPU each, 500Gi storage)
+  - Kibana 9.3.1 — 2 replicas (4Gi memory, 2 CPU each)
+  - GKE cluster — 3 x n1-highmem-16 nodes across us-east1 (b, c, d)
+  - All resources are configurable via pipeline variables
+
+Key Features:
+  - Automated snapshots — SLM policy runs daily at 2 AM UTC to GCS bucket, 30-day retention
+  - Default index settings — Slow log thresholds and replica configuration applied automatically
+  - GKE Backups — Daily cluster-level backups with 7-day retention for disaster recovery
+  - Safe teardown workflow — Backups are paused (not deleted) during decommission,
+    giving us a 7-day safety net before full cleanup
+  - Token-based manifests — ES/Kibana resource specs (CPU, memory, storage, replicas)
+    are all configurable from the pipeline without editing YAML files
+
+Deployment Execution Plan:
+A detailed step-by-step deployment guide (DEPLOYMENT-GUIDE.md) is available in the repo covering:
+  1. Infrastructure setup (VPC → GKE cluster)
+  2. ECK deployment (operator → ES → Kibana → snapshots → index settings)
+  3. Backup enablement
+  4. Post-deployment validation commands
+  5. Teardown procedure (with backup retention)
+
+Next Steps:
+  - Review the repo and deployment guide
+  - Schedule a walkthrough if needed
+  - Plan the first deployment to Dev (pg-us-n-app-259723)
+
+Please take a look and let me know if you have any questions or feedback.
+
+Thanks,
+[Your Name]

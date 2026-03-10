@@ -1,10 +1,15 @@
 # Pipeline: GKE Backup Plan
-# Handles backup plan create/destroy with automatic cleanup
+# Manages backup plan lifecycle with safe teardown workflow.
 #
-# Stages:
-#   1. Plan (always runs) - dry run showing what would change
-#   2. Apply (only when action=apply) - creates/updates backup plan
-#   3. Destroy (only when action=destroy) - tears down backup plan
+# Actions:
+#   apply   - creates/updates backup plan (schedule active)
+#   pause   - pauses the backup schedule (keeps plan + existing backups for 7 days)
+#   destroy - deletes all backups + backup plan (use after backups expire or when forced)
+#
+# Safe teardown workflow:
+#   1. Run with action=pause   → schedule stops, existing backups retained (7-day TTL)
+#   2. Wait 7 days             → retention policy auto-expires old backups
+#   3. Run with action=destroy → cleans up empty plan (or force-deletes remaining backups)
 
 trigger: none
 
@@ -15,6 +20,7 @@ parameters:
     default: apply
     values:
       - apply
+      - pause
       - destroy
 
   - name: project
@@ -36,9 +42,9 @@ pool:
   vmImage: 'ubuntu-latest'
 
 stages:
-  # Stage 1: Plan (always runs - dry run)
+  # Stage 1: Plan (always runs)
   - stage: Plan
-    displayName: 'Terraform Plan (dry run)'
+    displayName: 'Terraform Plan'
     jobs:
       - deployment: TerraformPlan
         displayName: 'Terraform Plan'
@@ -57,9 +63,9 @@ stages:
                     backendPrefix: 'backup/${{ parameters.project }}/${{ parameters.clusterName }}'
                     extraVars: '-var=cluster_name=${{ parameters.clusterName }}'
 
-  # Stage 2: Apply (only when action=apply)
+  # Stage 2: Apply (action=apply — schedule active)
   - stage: Apply
-    displayName: 'Terraform Apply'
+    displayName: 'Terraform Apply (schedule active)'
     dependsOn: Plan
     condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'))
     jobs:
@@ -80,7 +86,30 @@ stages:
                     backendPrefix: 'backup/${{ parameters.project }}/${{ parameters.clusterName }}'
                     extraVars: '-var=cluster_name=${{ parameters.clusterName }}'
 
-  # Stage 3: Destroy (only when action=destroy)
+  # Stage 3: Pause (action=pause — stops schedule, keeps backups for 7-day retention)
+  - stage: Pause
+    displayName: 'Pause Backup Schedule'
+    dependsOn: Plan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'pause'))
+    jobs:
+      - deployment: TerraformPause
+        displayName: 'Terraform Apply (paused=true)'
+        environment: '${{ parameters.project }}-backup'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - template: templates/terraform-apply-steps.yml
+                  parameters:
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/backup'
+                    tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/backup-cluster.tfvars'
+                    backendBucket: '$(TF_STATE_BUCKET)'
+                    backendPrefix: 'backup/${{ parameters.project }}/${{ parameters.clusterName }}'
+                    extraVars: '-var=cluster_name=${{ parameters.clusterName }} -var=paused=true'
+
+  # Stage 4: Destroy (action=destroy — cleanup backups then delete plan)
   - stage: Destroy
     displayName: 'Terraform Destroy'
     dependsOn: Plan
@@ -94,6 +123,85 @@ stages:
             deploy:
               steps:
                 - checkout: self
+
+                - task: Bash@3
+                  displayName: 'Write GCP credentials'
+                  inputs:
+                    targetType: inline
+                    script: echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+
+                - task: Bash@3
+                  displayName: 'Cleanup backups before destroy'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      set -e
+                      export CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$(Agent.TempDirectory)/gcp-key.json"
+                      gcloud auth activate-service-account --key-file="$(Agent.TempDirectory)/gcp-key.json"
+
+                      PLAN_NAME="${{ parameters.clusterName }}-backup-01"
+                      PROJECT="${{ parameters.project }}"
+                      LOCATION="us-east1"
+
+                      echo "=== Pausing backup plan: $PLAN_NAME ==="
+                      gcloud beta container backup-restore backup-plans update "$PLAN_NAME" \
+                        --project="$PROJECT" \
+                        --location="$LOCATION" \
+                        --paused 2>/dev/null || echo "Plan may already be paused or not exist"
+
+                      echo ""
+                      echo "=== Listing existing backups ==="
+                      BACKUPS=$(gcloud beta container backup-restore backups list \
+                        --backup-plan="$PLAN_NAME" \
+                        --location="$LOCATION" \
+                        --project="$PROJECT" \
+                        --format="value(name)" 2>/dev/null || true)
+
+                      if [ -z "$BACKUPS" ]; then
+                        echo "No backups found — safe to destroy plan."
+                      else
+                        echo "Found backups to delete:"
+                        echo "$BACKUPS"
+                        echo ""
+
+                        for BACKUP in $BACKUPS; do
+                          BACKUP_NAME=$(basename "$BACKUP")
+                          echo "Deleting backup: $BACKUP_NAME ..."
+                          gcloud beta container backup-restore backups delete "$BACKUP_NAME" \
+                            --backup-plan="$PLAN_NAME" \
+                            --location="$LOCATION" \
+                            --project="$PROJECT" \
+                            --quiet --async 2>/dev/null || echo "  Failed to delete $BACKUP_NAME (may already be deleting)"
+                        done
+
+                        echo ""
+                        echo "=== Waiting for backup deletions to complete ==="
+                        MAX_WAIT=300
+                        ELAPSED=0
+                        while [ $ELAPSED -lt $MAX_WAIT ]; do
+                          REMAINING=$(gcloud beta container backup-restore backups list \
+                            --backup-plan="$PLAN_NAME" \
+                            --location="$LOCATION" \
+                            --project="$PROJECT" \
+                            --format="value(name)" 2>/dev/null | wc -l || echo "0")
+
+                          if [ "$REMAINING" -eq 0 ]; then
+                            echo "All backups deleted."
+                            break
+                          fi
+
+                          echo "  $REMAINING backup(s) still deleting... (${ELAPSED}s / ${MAX_WAIT}s)"
+                          sleep 15
+                          ELAPSED=$((ELAPSED + 15))
+                        done
+
+                        if [ $ELAPSED -ge $MAX_WAIT ]; then
+                          echo "WARNING: Timed out waiting for backup deletion. Proceeding with destroy anyway."
+                        fi
+                      fi
+                    env:
+                      USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+                  timeoutInMinutes: 10
 
                 - template: templates/terraform-destroy-steps.yml
                   parameters:

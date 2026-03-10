@@ -1,4 +1,4 @@
-# GKE Elastic Stack — Deployment Guide
+# GKE Elastic Stack — Deployment & Execution Plan
 
 ---
 
@@ -9,7 +9,7 @@ Azure DevOps Pipelines
         │
         ├── 01-foundation.yml       ← VPC (run once per project)
         ├── 02-cluster.yml          ← GKE cluster + node pool + GCS bucket
-        ├── 03-backup.yml           ← GKE backup agent config
+        ├── 03-backup.yml           ← GKE backup plan (pause / destroy lifecycle)
         ├── 04-eck-deploy.yml       ← ECK operator + Elasticsearch + Kibana
         ├── 05-eck-destroy.yml      ← Tear down ECK stack
         ├── 06-monitoring-self.yml  ← Self-monitoring (Metricbeat + Filebeat)
@@ -18,17 +18,204 @@ Azure DevOps Pipelines
 GCP Project
   └── VPC
        └── GKE Regional Cluster (us-east1, 3 zones)
+            ├── GCS Bucket (snapshots, auto-created with cluster)
             └── 3 × n1-highmem-16 nodes
                  ├── Elasticsearch (3 pods)
                  └── Kibana (2 pods)
 ```
 
-**Run order:** `01-foundation` → `02-cluster` → `04-eck-deploy`
-**Destroy order:** `05-eck-destroy` → `02-cluster (destroy)` → `01-foundation (destroy)`
+---
+
+## 2. Execution Order
+
+### Deploy (new environment)
+
+| Step | Pipeline | Action | What it does |
+|------|----------|--------|-------------|
+| 1 | `01-foundation.yml` | `apply` | Creates VPC (one-time per project) |
+| 2 | `02-cluster.yml` | `apply` | Creates GKE cluster + node pool + GCS bucket |
+| 3 | `04-eck-deploy.yml` | run | Deploys ECK operator, ES, Kibana, snapshots, SLM |
+| 4 | `03-backup.yml` | `apply` | Creates GKE backup plan (daily backups) |
+| 5 | `06-monitoring-self.yml` | `deploy` | Enables self-monitoring |
+
+### Teardown (decommission)
+
+| Step | Pipeline | Action | What it does |
+|------|----------|--------|-------------|
+| 1 | `03-backup.yml` | `pause` | Pauses backup schedule (keeps backups 7 days) |
+| 2 | `05-eck-destroy.yml` | run | Removes ECK stack from GKE |
+| 3 | `02-cluster.yml` | `destroy` | Removes cluster + subnet + GCS bucket |
+| 4 | *(wait 7 days)* | — | Backup retention auto-expires old backups |
+| 5 | `03-backup.yml` | `destroy` | Cleans up empty backup plan |
+| 6 | `01-foundation.yml` | `destroy` | Removes VPC (only if decommissioning project) |
+
+> **Warning:** Destroying the cluster (step 3) deletes all PVCs and ES data. The GKE backups from step 1 remain available for 7 days for restore if needed.
 
 ---
 
-## 2. Environments
+## 3. Detailed Execution Plan (Step-by-Step)
+
+This section provides the exact steps an operator should follow for a fresh deployment.
+
+### Phase 1: Infrastructure Setup
+
+```
+STEP 1 — Create VPC
+─────────────────────────────────────────────────
+Pipeline:    01-foundation.yml
+Parameters:  action=apply, project=pg-us-n-app-259723
+Run once:    Yes (one-time per GCP project)
+Wait for:    Pipeline completes (~3 min)
+Verify:      VPC exists in GCP Console → VPC Network
+```
+
+```
+STEP 2 — Create GKE Cluster
+─────────────────────────────────────────────────
+Pipeline:    02-cluster.yml
+Parameters:  action=apply, project=pg-us-n-app-259723, clusterName=<name>
+Wait for:    Pipeline completes (~15 min)
+Creates:     GKE cluster, node pool, subnet, GCS bucket
+Verify:      gcloud container clusters list --project=<project>
+             kubectl get nodes  (expect 3 Ready)
+```
+
+### Phase 2: Elastic Stack Deployment
+
+```
+STEP 3 — Deploy ECK + Elasticsearch + Kibana
+─────────────────────────────────────────────────
+Pipeline:    04-eck-deploy.yml
+Parameters:  project=pg-us-n-app-259723, clusterName=<name>, jvmMemory=8g
+Wait for:    Pipeline completes (~20 min)
+
+Internal execution order (eck-deployment-steps.yaml):
+  3a. Install gke-gcloud-auth-plugin → authenticate to GKE
+  3b. Replace tokens in 04-elasticsearch.yaml and 05-kibana.yaml via sed
+  3c. Install ECK CRDs + operator  → wait for operator pod ready
+  3d. Create elastic-stack namespace
+  3e. Upload synonyms ConfigMap
+  3f. Create GCS credentials secret from service account key
+  3g. Apply GCS credentials manifest
+  3h. Deploy Elasticsearch (3 nodes) → wait for pods + green/yellow health
+  3i. Deploy Kibana (2 replicas) → wait for pods + green health
+  3j. Apply enterprise trial license
+  3k. Apply default index settings (slow logs, replicas, refresh interval)
+  3l. Register GCS snapshot repository via kubectl exec + ES API
+  3m. Create SLM policy (daily-gcs-snapshots, 2 AM UTC)
+  3n. Trigger immediate snapshot to validate
+  3o. Show deployment summary (ES/Kibana health, service IPs)
+
+Verify:
+  kubectl get elasticsearch,kibana -n elastic-stack  (expect green)
+  kubectl get pods -n elastic-stack                   (expect 3 ES + 2 Kibana)
+  kubectl get svc -n elastic-stack                    (expect LoadBalancer IPs)
+```
+
+### Phase 3: Backup & Monitoring
+
+```
+STEP 4 — Enable GKE Backup
+─────────────────────────────────────────────────
+Pipeline:    03-backup.yml
+Parameters:  action=apply, project=pg-us-n-app-259723, clusterName=<name>
+Wait for:    Pipeline completes (~5 min)
+Creates:     Backup plan with daily schedule, 7-day retention
+Backs up:    elastic-system + elastic-stack namespaces (PVCs + secrets)
+Verify:      gcloud beta container backup-restore backup-plans list \
+               --project=<project> --location=us-east1
+```
+
+```
+STEP 5 — Enable Self-Monitoring (Optional)
+─────────────────────────────────────────────────
+Pipeline:    06-monitoring-self.yml
+Parameters:  project=pg-us-n-app-259723, clusterName=<name>
+Wait for:    Pipeline completes (~5 min)
+```
+
+### Phase 4: Post-Deployment Validation
+
+```
+STEP 6 — Validate Everything
+─────────────────────────────────────────────────
+Run these commands manually:
+
+  # Connect
+  gcloud container clusters get-credentials <clusterName> \
+    --region us-east1 --project <project>
+
+  # Cluster health
+  kubectl get elasticsearch,kibana -n elastic-stack
+
+  # All pods running
+  kubectl get pods -n elastic-stack -o wide
+
+  # Get elastic password
+  ES_PASS=$(kubectl get secret elasticsearch-es-elastic-user \
+    -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
+
+  # Get ES LoadBalancer IP
+  ES_IP=$(kubectl get svc elasticsearch-es-http -n elastic-stack \
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+  # Test ES cluster health
+  curl -sk -u "elastic:$ES_PASS" "https://$ES_IP:9200/_cluster/health?pretty"
+
+  # Verify index template was applied
+  curl -sk -u "elastic:$ES_PASS" "https://$ES_IP:9200/_index_template/default-settings?pretty"
+
+  # Verify snapshot repository
+  curl -sk -u "elastic:$ES_PASS" "https://$ES_IP:9200/_snapshot/my_gcs_repository?pretty"
+
+  # Verify SLM policy
+  curl -sk -u "elastic:$ES_PASS" "https://$ES_IP:9200/_slm/policy/daily-gcs-snapshots?pretty"
+
+  # Verify snapshot was taken
+  curl -sk -u "elastic:$ES_PASS" "https://$ES_IP:9200/_snapshot/my_gcs_repository/_all?pretty"
+
+  # Get Kibana URL
+  KIBANA_IP=$(kubectl get svc kibana-kb-http -n elastic-stack \
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  echo "Kibana: https://$KIBANA_IP:5601"
+```
+
+### Teardown Execution Plan
+
+```
+STEP T1 — Pause Backups (keep 7-day safety net)
+─────────────────────────────────────────────────
+Pipeline:    03-backup.yml
+Parameters:  action=pause, project=<project>, clusterName=<name>
+
+STEP T2 — Destroy ECK Stack
+─────────────────────────────────────────────────
+Pipeline:    05-eck-destroy.yml
+Parameters:  project=<project>, clusterName=<name>, removeOperator=true
+Stages:      RemoveMonitoring → RemoveStack → RemoveOperator
+
+STEP T3 — Destroy GKE Cluster
+─────────────────────────────────────────────────
+Pipeline:    02-cluster.yml
+Parameters:  action=destroy, project=<project>, clusterName=<name>
+WARNING:     Deletes ALL data, PVCs, and GCS bucket!
+
+STEP T4 — (Wait 7 days for backup retention to expire)
+
+STEP T5 — Destroy Backup Plan
+─────────────────────────────────────────────────
+Pipeline:    03-backup.yml
+Parameters:  action=destroy, project=<project>, clusterName=<name>
+
+STEP T6 — Destroy VPC (only if decommissioning entire project)
+─────────────────────────────────────────────────
+Pipeline:    01-foundation.yml
+Parameters:  action=destroy, project=<project>
+```
+
+---
+
+## 4. Environments
 
 | | Dev | Prod |
 |---|---|---|
@@ -36,32 +223,16 @@ GCP Project
 | **ADO Variable Group** | `gcp-credentials-pg-us-n-app-259723` | `gcp-credentials-pg-us-e-app-012345` |
 | **Region / Zones** | `us-east1` (b, c, d) | `us-east1` (b, c, d) |
 | **VPC** | `pg-us-n-app-259723-vpc` | `pg-us-e-app-012345-vpc` |
-| **Node Machine** | `n1-highmem-16` (16 vCPU / 104 GB) | `n1-highmem-16` (16 vCPU / 104 GB) |
-| **Nodes** | 3 (1 per zone) | 3 (1 per zone) |
+| **Nodes** | 3 × `n1-highmem-16` (16 vCPU / 104 GB) | 3 × `n1-highmem-16` |
 | **Disk** | 500 GB `pd-ssd` | 1000 GB `pd-ssd` |
-
-### Elastic Stack Specs
-
-| Component | Spec |
-|---|---|
-| **ES Version** | `9.3.1` |
-| **ES Nodes** | 3 (master + data + ingest + transform) |
-| **ES CPU** | 8 request / 12 limit |
-| **ES Memory** | 16Gi request / 32Gi limit |
-| **ES JVM Heap** | `8g` (default) |
-| **ES Storage** | 500Gi `pd-ssd` per pod |
-| **Kibana Replicas** | 2 |
-| **Kibana CPU / Memory** | 2 / 4Gi |
-| **TLS** | Self-signed (ECK-managed) |
-| **Endpoints** | LoadBalancer (ES `:9200`, Kibana `:5601`) |
 
 ---
 
-## 3. Prerequisites (One-Time)
+## 5. Prerequisites (One-Time)
 
-### 3.1 ADO Variable Group
+### ADO Variable Group
 
-Create a variable group `gcp-credentials-<project>` in Azure DevOps Library with:
+Create `gcp-credentials-<project>` in Azure DevOps Library:
 
 | Variable | Description |
 |---|---|
@@ -69,146 +240,218 @@ Create a variable group `gcp-credentials-<project>` in Azure DevOps Library with
 | `GCP_PROJECT_ID` | GCP project ID |
 | `TF_STATE_BUCKET` | GCS bucket for Terraform remote state |
 
-### 3.2 GCP Service Account Permissions
-
-The Terraform SA needs:
+### GCP Service Account Permissions
 
 - `roles/container.admin` — GKE clusters
 - `roles/compute.networkAdmin` — Subnets
 - `roles/storage.admin` — GCS buckets
 - `roles/iam.serviceAccountUser` — Node pool SA
 
-### 3.3 Run Pipeline 01 — Foundation (once per project)
+---
 
-Creates the VPC. GCS bucket is managed by the cluster pipeline, so it gets created and deleted along with the cluster.
+## 6. Pipeline 01 — Foundation (VPC)
+
+Creates the VPC. Run once per project.
 
 | Parameter | Value |
 |---|---|
-| Action | `apply` |
-| GCP Project | Select your project |
+| `action` | `apply` or `destroy` |
+| `project` | Select your project |
 
 ---
 
-## 4. Pipeline 02 — GKE Cluster
+## 7. Pipeline 02 — GKE Cluster
 
 Creates the GKE cluster, node pool, subnet, and GCS snapshot bucket.
 
-**Destroying the cluster also deletes the GCS bucket** — take a snapshot first if you need the data.
-
-### 4.1 Parameters
-
 | Parameter | Example | Required |
 |---|---|---|
-| `action` | `apply` or `destroy` | Yes |
+| `action` | `apply` / `destroy` | Yes |
 | `project` | `pg-us-n-app-259723` | Yes |
 | `clusterName` | `eck-dev-01` | **Yes** |
 
-### 4.2 How to Run
+**What gets created:**
+- Subnet: `<clusterName>-subnet-01`
+- GKE cluster: Regional, 3 zones, Kubernetes 1.30
+- Node pool: `elastic-pool` — 3 × `n1-highmem-16`, `pd-ssd`
+- GCS bucket: `<clusterName>-bucket-01` (for ES snapshots)
 
-1. Go to **Azure DevOps → Pipelines → `02-cluster`**
-2. Click **Run pipeline**
-3. Fill in parameters
-4. Review the **Plan** stage output
-5. Apply runs automatically on plan success (~10–15 min)
-
-### 4.3 What Gets Created
-
-- **Subnet:** `<clusterName>-subnet-01` with pod/service secondary ranges
-- **GKE Cluster:** Regional, VPC-native, Kubernetes `1.30`, 3 zones
-- **Node Pool:** `elastic-pool` — 3 × `n1-highmem-16`, `pd-ssd`, auto-upgrade on
-- **GCS Bucket:** `<clusterName>-bucket-01` for ES snapshots
-- **Maintenance window:** Saturdays
-
-### 4.4 Verify
-
-```bash
-gcloud container clusters get-credentials <clusterName> \
-  --region us-east1 --project <project>
-
-kubectl get nodes   # Expect: 3 nodes, all Ready
-```
+**Destroying the cluster also deletes the GCS bucket.**
 
 ---
 
-## 5. Pipeline 04 — ECK Stack
+## 8. Pipeline 04 — ECK Deploy
 
-Installs ECK operator, deploys Elasticsearch and Kibana, configures snapshots.
+Deploys the full Elastic stack in a **single stage** using a reusable template (`eck-deployment-steps.yaml`).
 
-### 5.1 Parameters
+### How It Works
+
+1. Installs `gke-gcloud-auth-plugin` and authenticates to GKE
+2. Replaces tokens in manifest files using `sed` (e.g., `_ES_NAME_` → `elasticsearch`)
+3. Installs ECK CRDs and operator
+4. Creates namespaces, synonyms ConfigMap, GCS credentials secret
+5. Deploys Elasticsearch → waits for green/yellow health
+6. Deploys Kibana → waits for green health
+7. Applies enterprise trial license
+8. Registers GCS snapshot repository via `kubectl exec` + ES API
+9. Creates SLM policy (daily at 2 AM UTC) + triggers immediate snapshot
+10. Shows deployment summary
+
+### Parameters
 
 | Parameter | Default | Description |
 |---|---|---|
 | `project` | `pg-us-n-app-259723` | Target GCP project |
-| `clusterName` | *(required)* | GKE cluster name (must exist) |
-| `esJvmHeap` | `8g` | JVM heap per ES pod (50% of memory request) |
+| `clusterName` | *(required)* | GKE cluster name |
+| `jvmMemory` | `8g` | JVM heap per ES pod |
 
-### 5.2 Stages
+### Elasticsearch Spec (pipeline variables)
 
-```
-Stage 1: ECK Operator
-  → Create namespaces (elastic-system, elastic-stack)
-  → Install ECK CRDs + operator
-  → Wait for operator ready
+| Setting | Variable | Default |
+|---|---|---|
+| Nodes | `elasticsearchNoOfNodes` | `3` |
+| CPU request / limit | `elasticsearchCpu` / `elasticsearchCpuLimit` | `8` / `12` |
+| Memory request / limit | `elasticsearchMemory` / `elasticsearchMemoryLimit` | `16Gi` / `32Gi` |
+| Storage | `elasticsearchStorage` | `500Ti` |
+| JVM Heap | `jvmMemory` parameter | `8g` |
+| Roles | — | master, data, data_content, data_hot, ingest, transform |
 
-Stage 2: ECK Stack
-  → Create GCS credentials secret
-  → Apply synonyms ConfigMap
-  → Deploy Elasticsearch (3 nodes)
-  → Deploy Kibana (2 replicas)
-  → Wait for ES green (10 min timeout)
-  → Wait for Kibana green (5 min timeout)
+### Kibana Spec (pipeline variables)
 
-Stage 3: Configure
-  → Setup GCS snapshot repository
-  → Create daily SLM policy (01:00 UTC, 7-day retention)
-  → Setup default index settings
-```
+| Setting | Variable | Default |
+|---|---|---|
+| Replicas | `kibanaNoOfNodes` | `2` |
+| CPU request / limit | `kibanaCpu` / `kibanaCpuLimit` | `2` / `4` |
+| Memory request / limit | `kibanaMemory` / `kibanaMemoryLimit` | `4Gi` / `8Gi` |
 
-### 5.3 How to Run
+### Snapshot Configuration
 
-1. Confirm Pipeline 02 completed and nodes are Ready
-2. Go to **Azure DevOps → Pipelines → `04-eck-deploy`**
-3. Fill in parameters and run
-4. Total runtime: ~20–35 min (mostly waiting for ES green)
-
-### 5.4 Fixed Pipeline Variables
-
-These live in `pipelines/04-eck-deploy.yml` — edit in source control to change:
-
-| Variable | Value |
+| Setting | Value |
 |---|---|
-| `ES_CLUSTER_NAME` | `elasticsearch` |
-| `KIBANA_NAME` | `kibana` |
-| `ES_VERSION` | `9.3.1` |
-| `ECK_OPERATOR_VERSION` | `9.3.1` |
-| `CLUSTER_LOCATION` | `us-east1` |
-| `SNAPSHOT_REPO_NAME` | `gcs-snapshots` |
-| `SLM_POLICY_NAME` | `daily-snapshots` |
+| Repository name | `my_gcs_repository` |
+| GCS bucket | `<clusterName>-bucket-01` |
+| SLM policy | `daily-gcs-snapshots` |
+| Schedule | `0 0 2 * * ?` (2 AM UTC / 10 PM EST) |
+| Retention | 30 days, min 5, max 30 snapshots |
 
-### 5.5 Manifest Files
+### Token Replacement
+
+The template uses `sed` to replace tokens in manifest files before applying:
+
+| Token | Replaced With | Example |
+|---|---|---|
+| `_ES_NAME_` | `$(elasticsearchName)` | `elasticsearch` |
+| `_NAMESPACE_` | `$(eckNamespace)` | `elastic-stack` |
+| `_ES_OPERATOR_VERSION_` | `$(elasticsearchOperatorVersion)` | `9.3.1` |
+| `_ES_NODES_` | `$(elasticsearchNoOfNodes)` | `3` |
+| `_ES_MEMORY_` | `$(elasticsearchMemory)` | `16Gi` |
+| `_ES_CPU_` | `$(elasticsearchCpu)` | `8` |
+| `_ES_MEMORY_LIMIT_` | `$(elasticsearchMemoryLimit)` | `32Gi` |
+| `_ES_CPU_LIMIT_` | `$(elasticsearchCpuLimit)` | `12` |
+| `_ES_HEAP_` | `${{ parameters.jvmMemory }}` | `8g` |
+| `_KIBANA_NAME_` | `$(kibanaName)` | `kibana` |
+| `_KIBANA_NODES_` | `$(kibanaNoOfNodes)` | `2` |
+| `_KIBANA_MEMORY_` | `$(kibanaMemory)` | `4Gi` |
+| `_KIBANA_CPU_` | `$(kibanaCpu)` | `2` |
+
+### Index Settings (07-index-settings.yaml)
+
+A Kubernetes Job that runs after ES is healthy. It configures default index templates via the ES REST API using `curl` from inside the cluster.
+
+**What it configures:**
+
+| Setting | Value | Purpose |
+|---|---|---|
+| `index.search.slowlog.threshold.query.warn` | `10s` | Slow query log |
+| `index.search.slowlog.threshold.query.info` | `5s` | Slow query log |
+| `index.search.slowlog.threshold.query.debug` | `2s` | Slow query log |
+| `index.search.slowlog.threshold.fetch.warn` | `1s` | Slow fetch log |
+| `index.search.slowlog.threshold.fetch.info` | `800ms` | Slow fetch log |
+| `index.indexing.slowlog.threshold.index.warn` | `10s` | Slow indexing log |
+| `index.indexing.slowlog.threshold.index.info` | `5s` | Slow indexing log |
+| `index.number_of_replicas` | `1` | Data redundancy |
+| `index.refresh_interval` | `5s` | Search visibility delay |
+
+**How it authenticates:** Mounts the `elasticsearch-es-elastic-user` secret as a volume at `/mnt/elastic-internal/users` and reads the password from that file. No `envsubst` or token replacement needed — all values are hardcoded.
+
+**Index template:** `default-settings` with pattern `["*"]` and priority `0` (lowest, so app-specific templates override it).
+
+### Manifest Files
 
 | File | Purpose |
 |---|---|
-| `eck/00-namespaces.yaml` | Namespaces |
-| `eck/03-synonyms-configmap.yaml` | Search synonyms ConfigMap |
-| `eck/04-elasticsearch.yaml` | Elasticsearch CRD |
-| `eck/05-kibana.yaml` | Kibana CRD |
-| `eck/06-snapshot-repository.yaml` | Snapshot repo + SLM policy (K8s Job) |
-| `eck/07-index-settings.yaml` | Default index settings (K8s Job) |
+| `eck/00-namespace.yaml` | Namespaces |
+| `eck/01-enterprise-license.yaml` | Enterprise trial license |
+| `eck/02-gcs-credentials.yaml` | GCS credentials secret |
+| `eck/04-elasticsearch.yaml` | Elasticsearch CRD (token-based) |
+| `eck/05-kibana.yaml` | Kibana CRD (token-based) |
+| `eck/07-index-settings.yaml` | Default index settings (hardcoded, no token replacement) |
+| `eck/synonyms/` | Synonym files directory |
 
 ---
 
-## 6. JVM Heap Sizing
+## 9. Pipeline 03 — GKE Backup
 
-**Rules:**
-- JVM heap = **50% of container memory request**
-- Minimum: **8g** (current default)
-- Maximum: **32g**
-- `-Xms` must equal `-Xmx`
+Manages GKE backup plans with a safe teardown workflow.
 
-**Current:** Container memory request is `16Gi` → JVM heap is `8g`
+### Actions
 
-To change: update memory in `eck/04-elasticsearch.yaml`, then pass new heap via `esJvmHeap` parameter.
+| Action | What happens |
+|---|---|
+| `apply` | Creates backup plan (daily schedule active) |
+| `pause` | Pauses schedule — existing backups kept for 7-day retention |
+| `destroy` | Deletes all backups (waits for completion), then removes plan |
+
+### Parameters
+
+| Parameter | Example | Required |
+|---|---|---|
+| `action` | `apply` / `pause` / `destroy` | Yes |
+| `project` | `pg-us-n-app-259723` | Yes |
+| `clusterName` | `eck-dev-01` | **Yes** |
+
+### Backup Configuration
+
+| Setting | Value |
+|---|---|
+| Backup plan name | `<clusterName>-backup-01` |
+| Schedule | Daily (1440 min RPO) |
+| Retention | 7 days |
+| Namespaces backed up | `elastic-system`, `elastic-stack` |
+| Volume data | Included |
+| Secrets | Included |
+
+### Safe Teardown Workflow
+
+When decommissioning a cluster, you want backups available for restore in case a team needs them:
+
+```
+1. Run 03-backup with action=pause
+   → Schedule stops, existing backups remain available
+
+2. Destroy the cluster (02-cluster destroy)
+   → Cluster gone, but backups still exist in GKE Backup
+
+3. If a team requests restore within 7 days:
+   → Create a new cluster, restore from backup
+
+4. After 7 days (retention auto-expires backups):
+   → Run 03-backup with action=destroy
+   → Cleans up the empty backup plan
+```
+
+For **immediate teardown** (no retention needed): just run `action=destroy` directly.
+
+---
+
+## 10. JVM Heap Sizing
+
+| Rule | Value |
+|---|---|
+| JVM heap | 50% of container memory request |
+| Minimum | `8g` (current default) |
+| Maximum | `32g` |
+| `-Xms` must equal `-Xmx` | Prevents heap resizing |
 
 | Container Memory (request) | JVM Heap |
 |---|---|
@@ -219,7 +462,7 @@ To change: update memory in `eck/04-elasticsearch.yaml`, then pass new heap via 
 
 ---
 
-## 7. Resource Layout Per Node
+## 11. Resource Layout Per Node
 
 ```
 n1-highmem-16  (16 vCPU / 104 GB / pd-ssd)
@@ -229,8 +472,8 @@ n1-highmem-16  (16 vCPU / 104 GB / pd-ssd)
 │   ├── JVM:    -Xms8g -Xmx8g
 │   └── PVC:    500Gi (dev) / 1000Gi (prod)
 ├── Kibana pod (2 replicas across cluster)
-│   ├── Memory: 4Gi
-│   └── CPU:    2
+│   ├── Memory: 4Gi request / 8Gi limit
+│   └── CPU:    2 request / 4 limit
 └── System: ~2 GB reserved
 
 × 3 nodes across zones (b, c, d)
@@ -238,9 +481,7 @@ n1-highmem-16  (16 vCPU / 104 GB / pd-ssd)
 
 ---
 
-## 8. Post-Deployment Verification
-
-### Quick Health Check
+## 12. Post-Deployment Verification
 
 ```bash
 # Connect to cluster
@@ -258,61 +499,20 @@ kubectl get elasticsearch,kibana -n elastic-stack
 
 # Check all pods (expect 3 ES + 2 Kibana, all Running)
 kubectl get pods -n elastic-stack
-```
 
-### Get Credentials and Access URLs
-
-```bash
-# Elastic password
+# Get elastic password
 kubectl get secret elasticsearch-es-elastic-user \
   -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d
 
-# Elasticsearch URL
-ES_IP=$(kubectl get svc elasticsearch-es-http -n elastic-stack \
-  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo "https://$ES_IP:9200"
-
-# Kibana URL
-KB_IP=$(kubectl get svc kibana-kb-http -n elastic-stack \
-  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo "https://$KB_IP:5601"
+# Get service URLs
+kubectl get svc -n elastic-stack
 ```
 
 > TLS uses self-signed certs. Use `curl -sk` or accept the browser warning.
 
-### Test Elasticsearch
-
-```bash
-ES_PASS=$(kubectl get secret elasticsearch-es-elastic-user \
-  -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
-
-# Cluster health
-curl -sk -u "elastic:$ES_PASS" "https://$ES_IP:9200/_cluster/health?pretty"
-
-# Nodes (expect 3)
-curl -sk -u "elastic:$ES_PASS" "https://$ES_IP:9200/_cat/nodes?v"
-
-# Snapshots
-curl -sk -u "elastic:$ES_PASS" "https://$ES_IP:9200/_snapshot/gcs-snapshots?pretty"
-```
-
 ---
 
-## 9. Teardown
-
-**Always destroy in reverse order.**
-
-```
-Step 1:  05-eck-destroy.yml         →  removes ECK stack
-Step 2:  02-cluster.yml (destroy)   →  removes cluster + subnet + GCS bucket
-Step 3:  01-foundation.yml (destroy) → removes VPC (only if decommissioning)
-```
-
-> **Warning:** Destroying the cluster deletes all PVCs and ES data. Take a snapshot first if needed.
-
----
-
-## 10. Troubleshooting
+## 13. Troubleshooting
 
 ### ES pods not starting
 
@@ -324,7 +524,7 @@ kubectl logs <pod> -n elastic-stack -c elasticsearch | grep -i error
 | Symptom | Fix |
 |---|---|
 | `IllegalArgumentException: index level settings` | Remove `index.*` from ES node config |
-| `CrashLoopBackOff` / JVM OOM | `ES_JVM_HEAP` must be ≤ 50% of memory limit |
+| `CrashLoopBackOff` / JVM OOM | `jvmMemory` must be ≤ 50% of memory limit |
 | `vm.max_map_count too low` | Check sysctl init container: `kubectl logs <pod> -c sysctl` |
 | `Pending` | Not enough node resources — check `kubectl describe pod` |
 
@@ -340,19 +540,20 @@ kubectl logs <pod> -n elastic-stack -c elasticsearch | grep -i error
 | Symptom | Fix |
 |---|---|
 | `Unable to retrieve version` | Wait for ES to be green first |
-| `elasticsearchRef not found` | Check `elasticsearchRef.name` matches `ES_CLUSTER_NAME` |
+| `elasticsearchRef not found` | Check `elasticsearchRef.name` matches ES cluster name |
 
 ### Snapshot repository fails
-
-```bash
-kubectl logs -l job-name=setup-snapshot-repo -n elastic-stack
-```
 
 | Symptom | Fix |
 |---|---|
 | `403 Forbidden` | SA missing `storage.objectAdmin` on the bucket |
 | `bucket not found` | Cluster pipeline didn't create the bucket — check Pipeline 02 |
-| `client credentials not found` | `gcs-credentials` secret missing — check ECK deploy Stage 2 |
+
+### GKE Backup destroy: "nested resources"
+
+| Symptom | Fix |
+|---|---|
+| `has nested resources` error | Run `action=pause` first, wait for backup retention to expire, then `action=destroy` |
 
 ### `gke-gcloud-auth-plugin not found`
 

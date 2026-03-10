@@ -1,23 +1,47 @@
-apiVersion: elasticsearch.k8s.elastic.co/v1
+apiVersion: _ES_NAME_.k8s.elastic.co/v1
 kind: Elasticsearch
 metadata:
-  name: ${ES_CLUSTER_NAME}
-  namespace: elastic-stack
+  name: _ES_NAME_
+  namespace: _NAMESPACE_
 spec:
-  version: ${ES_VERSION}
-
-  # GCS repository plugin for snapshots
+  podDisruptionBudget:
+    spec:
+      minAvailable: 1
+      selector:
+        matchLabels:
+          elasticsearch.k8s.elastic.co/cluster-name: _ES_NAME_
+  version: _ES_OPERATOR_VERSION_
+  volumeClaimDeletePolicy: DeleteOnScaledownOnly
+  http:
+    service:
+      spec:
+        type: LoadBalancer
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: _ES_NAME_
+          namespace: _NAMESPACE_
+    logs:
+      elasticsearchRefs:
+        - name: _ES_NAME_
+          namespace: _NAMESPACE_
   secureSettings:
     - secretName: gcs-credentials
-
   nodeSets:
     - name: master
-      count: 3
+      count: _ES_NODES_
+      volumeClaimTemplates:
+        - metadata:
+            name: _ES_NAME_-data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: _ES_STORAGE_Ti
+            storageClassName: premium-rwo
       config:
-        node.roles: ["master", "data", "data_content", "data_hot", "ingest", "transform"]
-        node.store.allow_mmap: false
-        # Synonyms filter path
-        path.repo: ["/usr/share/elasticsearch/config/synonyms"]
+        node.store.allow_mmap: true
       podTemplate:
         spec:
           initContainers:
@@ -25,41 +49,23 @@ spec:
               securityContext:
                 privileged: true
                 runAsUser: 0
-              command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+              command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
           containers:
-            - name: elasticsearch
-              resources:
-                requests:
-                  memory: 48Gi
-                  cpu: "8"
-                limits:
-                  memory: 48Gi
-              env:
-                - name: ES_JAVA_OPTS
-                  value: "-Xms${ES_JVM_HEAP} -Xmx${ES_JVM_HEAP}"
+            - name: _ES_NAME_
               volumeMounts:
                 - name: synonyms
-                  mountPath: /usr/share/elasticsearch/config/synonyms
-                  readOnly: true
+                  mountPath: /usr/share/_ES_NAME_/config/synonyms
+              env:
+                - name: ES_JAVA_OPTS
+                  value: -Xms_ES_HEAP_ -Xmx_ES_HEAP_
+              resources:
+                requests:
+                  memory: _ES_MEMORY_Gi
+                  cpu: _ES_CPU_
+                limits:
+                  memory: _ES_MEMORY_LIMIT_Gi
+                  cpu: _ES_CPU_LIMIT_
           volumes:
             - name: synonyms
               configMap:
-                name: elasticsearch-synonyms
-      volumeClaimTemplates:
-        - metadata:
-            name: elasticsearch-data
-          spec:
-            accessModes: ["ReadWriteOnce"]
-            storageClassName: premium-rwo
-            resources:
-              requests:
-                storage: 500Gi
-
-  # External LoadBalancer for Elasticsearch
-  http:
-    service:
-      spec:
-        type: LoadBalancer
-    tls:
-      selfSignedCertificate:
-        disabled: false
+                name: _ES_NAME_-synonyms

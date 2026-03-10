@@ -1,6 +1,6 @@
 # Pipeline: ECK Deploy
-# Deploys ECK operator, Elasticsearch, Kibana, snapshots, index settings
-# Syncs Kibana credentials to GCP Secret Manager
+# Deploys ECK operator, Elasticsearch, Kibana, snapshots via single reusable template.
+# All resource specs are configurable via pipeline variables.
 
 trigger: none
 
@@ -17,386 +17,77 @@ parameters:
     displayName: 'GKE Cluster Name'
     type: string
 
-  - name: esJvmHeap
-    displayName: 'ES JVM Heap (e.g. 24g)'
+  - name: jvmMemory
+    displayName: 'ES JVM Heap (e.g. 8g)'
     type: string
-    default: '24g'
+    default: '8g'
 
 variables:
   - group: gcp-credentials-${{ parameters.project }}
-  # Variable group must contain:
-  #   GCP_SA_KEY            - GCP Service Account Key JSON
-  #   GCP_PROJECT_ID        - GCP Project ID
-  #   KIBANA_ENCRYPTION_KEY - 32+ char random string (openssl rand -base64 32)
-  - name: ES_CLUSTER_NAME
-    value: elasticsearch
-  - name: KIBANA_NAME
-    value: kibana
-  # GCS bucket name must match what foundation pipeline created ({project}-eck-snapshots)
-  - name: GCS_BUCKET_NAME
-    value: ${{ parameters.project }}-eck-snapshots
-  - name: ES_VERSION
-    value: '9.3.1'
+  # Variable group must contain: GCP_SA_KEY, GCP_PROJECT_ID
+
+  # ECK / Elastic versions
   - name: ECK_OPERATOR_VERSION
+    value: '9.3.1'
+  - name: elasticsearchOperatorVersion
     value: '9.3.1'
   - name: CLUSTER_LOCATION
     value: us-east1
-  - name: SNAPSHOT_REPO_NAME
-    value: gcs-snapshots
-  - name: SNAPSHOT_BASE_PATH
-    value: es-snapshots
-  - name: SLM_POLICY_NAME
-    value: daily-snapshots
+
+  # Elasticsearch settings
+  - name: elasticsearchName
+    value: elasticsearch
+  - name: eckNamespace
+    value: elastic-stack
+  - name: elasticsearchNoOfNodes
+    value: '3'
+  - name: elasticsearchStorage
+    value: '500Ti'
+  - name: elasticsearchMemory
+    value: '16Gi'
+  - name: elasticsearchMemoryLimit
+    value: '32Gi'
+  - name: elasticsearchCpu
+    value: '8'
+  - name: elasticsearchCpuLimit
+    value: '12'
+
+  # Kibana settings
+  - name: kibanaName
+    value: kibana
+  - name: kibanaNoOfNodes
+    value: '2'
+  - name: kibanaMemory
+    value: '4Gi'
+  - name: kibanaMemoryLimit
+    value: '8Gi'
+  - name: kibanaCpu
+    value: '2'
+  - name: kibanaCpuLimit
+    value: '4'
+
+  # GCS bucket for snapshots (auto-derived from cluster name)
+  - name: GCS_BUCKET_NAME
+    value: ${{ parameters.clusterName }}-bucket-01
+
+  # Working directory for ECK manifests
+  - name: workingDirectory
+    value: '$(System.DefaultWorkingDirectory)/eck'
 
 pool:
   vmImage: 'ubuntu-latest'
 
 stages:
-  # Stage 1: Deploy ECK Operator
-  - stage: ECK_Operator
-    displayName: 'Deploy ECK Operator'
+  - stage: ECK_Deploy
+    displayName: 'Deploy ECK Stack'
     jobs:
-      - job: DeployOperator
-        displayName: 'ECK Operator'
+      - job: DeployECK
+        displayName: 'ECK Deployment'
+        timeoutInMinutes: 45
         steps:
           - checkout: self
 
-          - task: Bash@3
-            displayName: 'Install gke-gcloud-auth-plugin'
-            enabled: true
-            inputs:
-              targetType: 'inline'
-              script: |
-                set -euo pipefail
-
-                # Add Google Cloud SDK apt source
-                sudo apt-get update
-                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
-
-                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
-                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
-                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
-
-                sudo apt-get update
-                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
-
-                # Find the installed plugin binary
-                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
-                echo "Plugin binary found at: $PLUGIN_BIN"
-
-                # Create a symlink in /usr/local/bin so it's always on PATH for all subsequent steps
-                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
-                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
-                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
-                  echo "Symlinked to /usr/local/bin/gke-gcloud-auth-plugin"
-                else
-                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
-                  exit 1
-                fi
-
-                # Verify
-                echo "=== Verification ==="
-                which gke-gcloud-auth-plugin
-                gke-gcloud-auth-plugin --version
-
-          - task: Bash@3
-            displayName: 'Authenticate to GKE'
-            enabled: true
-            inputs:
-              targetType: 'inline'
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
-
-                echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
-                gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
-                gcloud container clusters get-credentials ${{ parameters.clusterName }} \
-                  --region $(CLUSTER_LOCATION) \
-                  --project $(GCP_PROJECT_ID)
-            env:
-              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
-
-          - task: Bash@3
-            displayName: 'Create Namespaces'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                echo "Creating namespaces (idempotent - safe to re-run)..."
-                kubectl apply -f $(System.DefaultWorkingDirectory)/eck/00-namespaces.yaml
-
-          - task: Bash@3
-            displayName: 'Install ECK CRDs'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                kubectl apply --server-side -f https://download.elastic.co/downloads/eck/$(ECK_OPERATOR_VERSION)/crds.yaml
-                sleep 10
-
-          - task: Bash@3
-            displayName: 'Install ECK Operator'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                kubectl apply -f https://download.elastic.co/downloads/eck/$(ECK_OPERATOR_VERSION)/operator.yaml
-
-                echo "Waiting for ECK operator to be ready..."
-                kubectl -n elastic-system rollout status deployment/elastic-operator --timeout=120s
-
-  # Stage 2: Deploy Elasticsearch and Kibana
-  - stage: ECK_Stack
-    displayName: 'Deploy Elasticsearch & Kibana'
-    dependsOn: ECK_Operator
-    jobs:
-      - job: DeployStack
-        displayName: 'Elastic Stack'
-        steps:
-          - checkout: self
-
-          - task: Bash@3
-            displayName: 'Install gke-gcloud-auth-plugin'
-            enabled: true
-            inputs:
-              targetType: 'inline'
-              script: |
-                set -euo pipefail
-
-                # Add Google Cloud SDK apt source
-                sudo apt-get update
-                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
-
-                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
-                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
-                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
-
-                sudo apt-get update
-                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
-
-                # Find the installed plugin binary
-                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
-                echo "Plugin binary found at: $PLUGIN_BIN"
-
-                # Create a symlink in /usr/local/bin so it's always on PATH for all subsequent steps
-                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
-                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
-                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
-                  echo "Symlinked to /usr/local/bin/gke-gcloud-auth-plugin"
-                else
-                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
-                  exit 1
-                fi
-
-                # Verify
-                echo "=== Verification ==="
-                which gke-gcloud-auth-plugin
-                gke-gcloud-auth-plugin --version
-
-          - task: Bash@3
-            displayName: 'Authenticate to GKE'
-            enabled: true
-            inputs:
-              targetType: 'inline'
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
-
-                echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
-                gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
-                gcloud container clusters get-credentials ${{ parameters.clusterName }} \
-                  --region $(CLUSTER_LOCATION) \
-                  --project $(GCP_PROJECT_ID)
-            env:
-              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
-
-          # Create GCS credentials secret from service account key
-          - task: Bash@3
-            displayName: 'Create GCS Credentials Secret'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcs-key.json
-                kubectl create secret generic gcs-credentials \
-                  --from-file=gcs.client.default.credentials_file=$(Agent.TempDirectory)/gcs-key.json \
-                  -n elastic-stack --dry-run=client -o yaml | kubectl apply -f -
-
-          - task: Bash@3
-            displayName: 'Apply Synonyms ConfigMap'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                kubectl apply -f $(System.DefaultWorkingDirectory)/eck/03-synonyms-configmap.yaml
-
-          # Apply Elasticsearch manifest with variable substitution
-          - task: Bash@3
-            displayName: 'Deploy Elasticsearch'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
-                export ES_VERSION="$(ES_VERSION)"
-                export ES_JVM_HEAP="${{ parameters.esJvmHeap }}"
-                envsubst < $(System.DefaultWorkingDirectory)/eck/04-elasticsearch.yaml | kubectl apply -f -
-
-          - task: Bash@3
-            displayName: 'Deploy Kibana'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
-                export KIBANA_NAME="$(KIBANA_NAME)"
-                export ES_VERSION="$(ES_VERSION)"
-                export KIBANA_EXTERNAL_HOST="kibana.${{ parameters.project }}.example.com"
-                export KIBANA_ENCRYPTION_KEY="$(KIBANA_ENCRYPTION_KEY)"
-                export KIBANA_SAVED_OBJECTS_KEY="$(KIBANA_ENCRYPTION_KEY)"
-                export KIBANA_REPORTING_KEY="$(KIBANA_ENCRYPTION_KEY)"
-                envsubst < $(System.DefaultWorkingDirectory)/eck/05-kibana.yaml | kubectl apply -f -
-
-          - task: Bash@3
-            displayName: 'Wait for Elasticsearch Ready'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                echo "Waiting for Elasticsearch to become green..."
-                kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green \
-                  elasticsearch/$(ES_CLUSTER_NAME) --timeout=600s
-            timeoutInMinutes: 12
-
-          - task: Bash@3
-            displayName: 'Wait for Kibana Ready'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                echo "Waiting for Kibana to become green..."
-                kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green \
-                  kibana/$(KIBANA_NAME) --timeout=300s
-            timeoutInMinutes: 7
-
-  # Stage 3: Configure snapshots, index settings, sync credentials
-  - stage: ECK_Configure
-    displayName: 'Configure Snapshots & Settings'
-    dependsOn: ECK_Stack
-    jobs:
-      - job: ConfigureECK
-        displayName: 'ECK Configuration'
-        steps:
-          - checkout: self
-
-          - task: Bash@3
-            displayName: 'Install gke-gcloud-auth-plugin'
-            enabled: true
-            inputs:
-              targetType: 'inline'
-              script: |
-                set -euo pipefail
-
-                # Add Google Cloud SDK apt source
-                sudo apt-get update
-                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
-
-                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
-                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
-                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
-
-                sudo apt-get update
-                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
-
-                # Find the installed plugin binary
-                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
-                echo "Plugin binary found at: $PLUGIN_BIN"
-
-                # Create a symlink in /usr/local/bin so it's always on PATH for all subsequent steps
-                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
-                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
-                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
-                  echo "Symlinked to /usr/local/bin/gke-gcloud-auth-plugin"
-                else
-                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
-                  exit 1
-                fi
-
-                # Verify
-                echo "=== Verification ==="
-                which gke-gcloud-auth-plugin
-                gke-gcloud-auth-plugin --version
-
-          - task: Bash@3
-            displayName: 'Authenticate to GKE'
-            enabled: true
-            inputs:
-              targetType: 'inline'
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
-
-                echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
-                gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
-                gcloud container clusters get-credentials ${{ parameters.clusterName }} \
-                  --region $(CLUSTER_LOCATION) \
-                  --project $(GCP_PROJECT_ID)
-            env:
-              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
-
-          # Setup snapshot repository and SLM policy
-          - task: Bash@3
-            displayName: 'Setup Snapshot Repository & SLM Policy'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
-                export GCS_BUCKET_NAME="$(GCS_BUCKET_NAME)"
-                export SNAPSHOT_REPO_NAME="$(SNAPSHOT_REPO_NAME)"
-                export SNAPSHOT_BASE_PATH="$(SNAPSHOT_BASE_PATH)"
-                export SLM_POLICY_NAME="$(SLM_POLICY_NAME)"
-                envsubst < $(System.DefaultWorkingDirectory)/eck/06-snapshot-repository.yaml | kubectl apply -f -
-
-          # Setup default index settings
-          - task: Bash@3
-            displayName: 'Setup Index Settings'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                export ES_CLUSTER_NAME="$(ES_CLUSTER_NAME)"
-                envsubst < $(System.DefaultWorkingDirectory)/eck/07-index-settings.yaml | kubectl apply -f -
-
-          # Wait for setup jobs
-          - task: Bash@3
-            displayName: 'Wait for Setup Jobs'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                kubectl -n elastic-stack wait --for=condition=complete job/setup-snapshot-repo --timeout=300s || true
-                kubectl -n elastic-stack wait --for=condition=complete job/setup-index-settings --timeout=300s || true
-
-          # Sync Kibana credentials to GCP Secret Manager
-          - task: Bash@3
-            displayName: 'Sync Kibana Credentials to Secret Manager'
-            inputs:
-              targetType: inline
-              script: |
-                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-                ES_PASSWORD=$(kubectl get secret $(ES_CLUSTER_NAME)-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
-                KIBANA_LB=$(kubectl get svc $(KIBANA_NAME)-kb-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-                ES_LB=$(kubectl get svc $(ES_CLUSTER_NAME)-es-http -n elastic-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-
-                SECRET_VALUE="{\"username\":\"elastic\",\"password\":\"${ES_PASSWORD}\",\"kibana_url\":\"https://${KIBANA_LB}:5601\",\"elasticsearch_url\":\"https://${ES_LB}:9200\"}"
-
-                echo -n "$SECRET_VALUE" | gcloud secrets versions add kibana-credentials \
-                  --data-file=- --project=$(GCP_PROJECT_ID) 2>/dev/null || \
-                echo -n "$SECRET_VALUE" | gcloud secrets versions add elastic-credentials \
-                  --data-file=- --project=$(GCP_PROJECT_ID) 2>/dev/null || true
-
-                echo "Credentials synced to GCP Secret Manager."
-                echo "Kibana URL: https://${KIBANA_LB}:5601"
-                echo "Elasticsearch URL: https://${ES_LB}:9200"
-                echo "Username: elastic"
+          - template: templates/eck-deployment-steps.yaml
+            parameters:
+              clusterName: ${{ parameters.clusterName }}
+              jvmMemory: ${{ parameters.jvmMemory }}

@@ -1,54 +1,34 @@
-apiVersion: kibana.k8s.elastic.co/v1
+apiVersion: _KIBANA_NAME_.k8s.elastic.co/v1
 kind: Kibana
 metadata:
-  name: ${KIBANA_NAME}
-  namespace: elastic-stack
+  name: _KIBANA_NAME_
+  namespace: _NAMESPACE_
 spec:
-  version: ${ES_VERSION}
-  count: 3
-
-  elasticsearchRef:
-    name: ${ES_CLUSTER_NAME}
-
-  config:
-    # Server settings
-    server.name: kibana
-    server.publicBaseUrl: "https://${KIBANA_EXTERNAL_HOST}:5601"
-
-    # Logging
-    logging.root.level: info
-    logging.appenders.default:
-      type: console
-      layout:
-        type: json
-
-    # Security
-    xpack.security.encryptionKey: "${KIBANA_ENCRYPTION_KEY}"
-    xpack.encryptedSavedObjects.encryptionKey: "${KIBANA_SAVED_OBJECTS_KEY}"
-    xpack.reporting.encryptionKey: "${KIBANA_REPORTING_KEY}"
-
-    # Stack monitoring
-    monitoring.kibana.collection.enabled: true
-
-  podTemplate:
-    metadata:
-      labels:
-        app: kibana
-    spec:
-      containers:
-        - name: kibana
-          resources:
-            requests:
-              memory: 4Gi
-              cpu: "2"
-            limits:
-              memory: 4Gi
-
-  # External LoadBalancer for Kibana
   http:
     service:
       spec:
         type: LoadBalancer
-    tls:
-      selfSignedCertificate:
-        disabled: false
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: _ES_NAME_
+          namespace: _NAMESPACE_
+    logs:
+      elasticsearchRefs:
+        - name: _ES_NAME_
+          namespace: _NAMESPACE_
+  version: _ES_OPERATOR_VERSION_
+  count: _KIBANA_NODES_
+  elasticsearchRef:
+    name: _ES_NAME_
+  podTemplate:
+    spec:
+      containers:
+        - name: _KIBANA_NAME_
+          resources:
+            requests:
+              memory: _KIBANA_MEMORY_Gi
+              cpu: _KIBANA_CPU_
+            limits:
+              memory: _KIBANA_MEMORY_LIMIT_Gi
+              cpu: _KIBANA_CPU_LIMIT_

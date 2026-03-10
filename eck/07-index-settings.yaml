@@ -16,7 +16,7 @@ spec:
             - /bin/sh
             - -c
             - |
-              ES_URL="https://${ES_CLUSTER_NAME}-es-http.elastic-stack.svc:9200"
+              ES_URL="https://elasticsearch-es-http.elastic-stack.svc:9200"
               ES_PASS=$(cat /mnt/elastic-internal/users/elastic)
 
               echo "Waiting for Elasticsearch..."
@@ -24,7 +24,7 @@ spec:
                 sleep 10
               done
 
-              echo "Setting default index template with slow log and synonyms..."
+              echo "Setting default index template with slow log and replicas..."
               curl -sk -u "elastic:$ES_PASS" -X PUT "$ES_URL/_index_template/default-settings" \
                 -H 'Content-Type: application/json' \
                 -d '{
@@ -46,34 +46,6 @@ spec:
                 }'
               echo ""
               echo "Default index template configured."
-
-              echo "Creating synonym analyzer index template..."
-              curl -sk -u "elastic:$ES_PASS" -X PUT "$ES_URL/_index_template/synonym-analyzer" \
-                -H 'Content-Type: application/json' \
-                -d '{
-                  "index_patterns": ["app-*"],
-                  "priority": 10,
-                  "template": {
-                    "settings": {
-                      "analysis": {
-                        "filter": {
-                          "synonym_filter": {
-                            "type": "synonym",
-                            "synonyms_path": "synonyms/synonyms.txt"
-                          }
-                        },
-                        "analyzer": {
-                          "synonym_analyzer": {
-                            "tokenizer": "standard",
-                            "filter": ["lowercase", "synonym_filter"]
-                          }
-                        }
-                      }
-                    }
-                  }
-                }'
-              echo ""
-              echo "Synonym analyzer template configured."
           volumeMounts:
             - name: es-user
               mountPath: /mnt/elastic-internal/users
@@ -81,4 +53,4 @@ spec:
       volumes:
         - name: es-user
           secret:
-            secretName: ${ES_CLUSTER_NAME}-es-elastic-user
+            secretName: elasticsearch-es-elastic-user

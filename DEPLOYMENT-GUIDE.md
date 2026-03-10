@@ -27,8 +27,8 @@
 ```
 Azure DevOps Pipelines
         │
-        ├── 01-foundation.yml      ← VPC, GCS bucket, Secret Manager  (run once)
-        ├── 02-cluster.yml         ← GKE cluster + node pool           (this guide)
+        ├── 01-foundation.yml      ← VPC                                  (run once)
+        ├── 02-cluster.yml         ← GKE cluster + node pool + GCS bucket (this guide)
         ├── 03-backup.yml          ← GKE backup agent config
         ├── 04-eck-deploy.yml      ← ECK operator, ES, Kibana          (this guide)
         ├── 05-eck-destroy.yml     ← Tear down ECK stack
@@ -125,12 +125,13 @@ Each environment requires a variable group named `gcp-credentials-<project>` in 
 
 ### 3.2 Run Pipeline 01 — Foundation (one-time per environment)
 
-Pipeline `01-foundation.yml` creates persistent infrastructure that survives cluster recreation:
+Pipeline `01-foundation.yml` creates the VPC that persists across cluster lifecycles:
 
 | Resource          | Dev                                        | Prod                                        |
 |-------------------|--------------------------------------------|---------------------------------------------|
 | VPC               | `pg-us-n-app-259723-vpc`                   | `pg-us-e-app-012345-vpc`                    |
-| GCS Bucket        | `pg-us-n-app-259723-eck-snapshots`         | `pg-us-e-app-012345-eck-snapshots`          |
+
+> **Note:** GCS bucket is now managed by the cluster pipeline (`02-cluster.yml`) so it is automatically created/deleted with the cluster.
 
 ### 3.3 GCP Service Account Permissions
 

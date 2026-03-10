@@ -1,16 +1,10 @@
-# Pipeline: Foundation (VPC, GCS Bucket)
-# These resources persist across cluster lifecycles
+# Pipeline: Foundation (VPC only)
+# Creates the VPC that persists across cluster lifecycles.
+# GCS bucket is now managed by the cluster pipeline (02-cluster.yml).
 #
 # Actions:
-#   apply         - creates/updates all foundation infrastructure
-#   destroy-all   - tears down everything (VPC + GCS bucket)
-#   destroy-bucket - tears down only the GCS snapshot bucket
-#   destroy-vpc   - tears down only the VPC
-#
-# Stages:
-#   1. Plan (always runs) - dry run showing what would change
-#   2. Apply (only when action=apply) - creates/updates infrastructure
-#   3. Destroy (when action starts with 'destroy') - targeted teardown
+#   apply   - creates/updates the VPC
+#   destroy - tears down the VPC (only if no clusters depend on it)
 
 trigger: none
 
@@ -21,9 +15,7 @@ parameters:
     default: apply
     values:
       - apply
-      - destroy-all
-      - destroy-bucket
-      - destroy-vpc
+      - destroy
 
   - name: project
     displayName: 'GCP Project'
@@ -32,16 +24,6 @@ parameters:
     values:
       - pg-us-n-app-259723
       - pg-us-e-app-012345
-
-  - name: vpcName
-    displayName: 'VPC Name (leave empty to use tfvars default)'
-    type: string
-    default: ''
-
-  - name: gcsBucketName
-    displayName: 'GCS Bucket Name (leave empty to use tfvars default)'
-    type: string
-    default: ''
 
 variables:
   - group: gcp-credentials-${{ parameters.project }}
@@ -64,37 +46,12 @@ stages:
               steps:
                 - checkout: self
 
-                - task: Bash@3
-                  name: buildVars
-                  displayName: 'Build variable overrides'
-                  inputs:
-                    targetType: inline
-                    script: |
-                      EXTRA=""
-                      if [ -n "${{ parameters.vpcName }}" ]; then
-                        EXTRA="$EXTRA -var=vpc_name=${{ parameters.vpcName }}"
-                      fi
-                      if [ -n "${{ parameters.gcsBucketName }}" ]; then
-                        EXTRA="$EXTRA -var=gcs_bucket_name=${{ parameters.gcsBucketName }}"
-                      fi
-
-                      # Include -target for selective destroy so plan shows correct scope
-                      ACTION="${{ parameters.action }}"
-                      if [ "$ACTION" = "destroy-bucket" ]; then
-                        EXTRA="$EXTRA -target=module.gcs_bucket"
-                      elif [ "$ACTION" = "destroy-vpc" ]; then
-                        EXTRA="$EXTRA -target=module.vpc"
-                      fi
-
-                      echo "##vso[task.setvariable variable=EXTRA_VARS;isOutput=true]$EXTRA"
-
                 - template: templates/terraform-plan-steps.yml
                   parameters:
                     workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/foundation'
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/foundation.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
                     backendPrefix: 'foundation/${{ parameters.project }}'
-                    extraVars: '$(buildVars.EXTRA_VARS)'
 
   # Stage 2: Apply (only when action=apply)
   - stage: Apply
@@ -111,37 +68,21 @@ stages:
               steps:
                 - checkout: self
 
-                - task: Bash@3
-                  name: buildVars
-                  displayName: 'Build variable overrides'
-                  inputs:
-                    targetType: inline
-                    script: |
-                      EXTRA=""
-                      if [ -n "${{ parameters.vpcName }}" ]; then
-                        EXTRA="$EXTRA -var=vpc_name=${{ parameters.vpcName }}"
-                      fi
-                      if [ -n "${{ parameters.gcsBucketName }}" ]; then
-                        EXTRA="$EXTRA -var=gcs_bucket_name=${{ parameters.gcsBucketName }}"
-                      fi
-                      echo "##vso[task.setvariable variable=EXTRA_VARS;isOutput=true]$EXTRA"
-
                 - template: templates/terraform-apply-steps.yml
                   parameters:
                     workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/foundation'
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/foundation.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
                     backendPrefix: 'foundation/${{ parameters.project }}'
-                    extraVars: '$(buildVars.EXTRA_VARS)'
 
-  # Stage 3: Destroy (when action starts with 'destroy')
+  # Stage 3: Destroy (only when action=destroy)
   - stage: Destroy
-    displayName: 'Terraform Destroy (${{ parameters.action }})'
+    displayName: 'Terraform Destroy'
     dependsOn: Plan
-    condition: and(succeeded(), startsWith('${{ parameters.action }}', 'destroy'))
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'destroy'))
     jobs:
       - deployment: TerraformDestroy
-        displayName: 'Terraform Destroy (${{ parameters.action }})'
+        displayName: 'Terraform Destroy'
         environment: '${{ parameters.project }}-foundation'
         strategy:
           runOnce:
@@ -149,38 +90,9 @@ stages:
               steps:
                 - checkout: self
 
-                - task: Bash@3
-                  name: buildVars
-                  displayName: 'Build variable overrides and target'
-                  inputs:
-                    targetType: inline
-                    script: |
-                      EXTRA=""
-                      if [ -n "${{ parameters.vpcName }}" ]; then
-                        EXTRA="$EXTRA -var=vpc_name=${{ parameters.vpcName }}"
-                      fi
-                      if [ -n "${{ parameters.gcsBucketName }}" ]; then
-                        EXTRA="$EXTRA -var=gcs_bucket_name=${{ parameters.gcsBucketName }}"
-                      fi
-
-                      # Selective destroy using -target
-                      ACTION="${{ parameters.action }}"
-                      if [ "$ACTION" = "destroy-bucket" ]; then
-                        EXTRA="$EXTRA -target=module.gcs_bucket"
-                        echo ">> Destroying GCS bucket only"
-                      elif [ "$ACTION" = "destroy-vpc" ]; then
-                        EXTRA="$EXTRA -target=module.vpc"
-                        echo ">> Destroying VPC only"
-                      else
-                        echo ">> Destroying ALL foundation resources"
-                      fi
-
-                      echo "##vso[task.setvariable variable=EXTRA_VARS;isOutput=true]$EXTRA"
-
                 - template: templates/terraform-destroy-steps.yml
                   parameters:
                     workingDirectory: '$(System.DefaultWorkingDirectory)/stacks/foundation'
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/foundation.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
                     backendPrefix: 'foundation/${{ parameters.project }}'
-                    extraVars: '$(buildVars.EXTRA_VARS)'

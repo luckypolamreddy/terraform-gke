@@ -48,8 +48,13 @@ variable "cluster_index" {
 
 # Cluster
 variable "cluster_name" {
-  description = "Name of the GKE cluster"
+  description = "Name of the GKE cluster (auto-lowercased). Only lowercase letters, numbers, and hyphens allowed."
   type        = string
+
+  validation {
+    condition     = can(regex("^[a-zA-Z][a-zA-Z0-9-]*$", var.cluster_name))
+    error_message = "Cluster name must start with a letter and contain only letters, numbers, and hyphens."
+  }
 }
 
 variable "kubernetes_version" {

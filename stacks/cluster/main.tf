@@ -1,6 +1,8 @@
 locals {
-  subnet_name = "${var.cluster_name}-subnet-01"
-  is_default  = var.network_mode == "default"
+  # Auto-lowercase cluster name (GKE rejects uppercase)
+  cluster_name = lower(var.cluster_name)
+  subnet_name  = "${local.cluster_name}-subnet-01"
+  is_default   = var.network_mode == "default"
 
   # Auto-calculate CIDRs based on cluster_index (custom mode only)
   # Each cluster_index gets its own /20 blocks in the 10.x.0.0 space:
@@ -45,7 +47,7 @@ module "gke_cluster" {
   source = "../../modules/gke-cluster"
 
   project_id         = var.project_id
-  cluster_name       = var.cluster_name
+  cluster_name       = local.cluster_name
   location           = var.location
   network            = local.network
   subnetwork         = local.subnetwork

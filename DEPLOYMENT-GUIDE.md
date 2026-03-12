@@ -222,9 +222,26 @@ Parameters:  action=destroy, project=<project>
 | **GCP Project** | `pg-us-n-app-259723` | `pg-us-e-app-012345` |
 | **ADO Variable Group** | `gcp-credentials-pg-us-n-app-259723` | `gcp-credentials-pg-us-e-app-012345` |
 | **Region / Zones** | `us-east1` (b, c, d) | `us-east1` (b, c, d) |
-| **VPC** | `pg-us-n-app-259723-vpc` | `pg-us-e-app-012345-vpc` |
+| **Network Mode** | `default` (GCP default VPC) | `custom` (dedicated VPC + auto-CIDRs) |
+| **VPC** | `default` | `pg-us-e-app-012345-vpc` |
+| **Subnet CIDRs** | Auto-allocated by GKE | Auto-calculated from `cluster_index` |
 | **Nodes** | 3 × `n1-highmem-16` (16 vCPU / 104 GB) | 3 × `n1-highmem-16` |
 | **Disk** | 500 GB `pd-ssd` | 1000 GB `pd-ssd` |
+
+### Networking Modes
+
+**Default mode (Dev):** Uses GCP's pre-existing `default` VPC and `default` subnet. GKE auto-allocates pod and service CIDRs. No foundation pipeline needed. You can create unlimited clusters without CIDR conflicts.
+
+**Custom mode (Prod):** Creates a dedicated subnet per cluster inside a custom VPC. CIDRs are auto-calculated from `cluster_index`:
+
+```
+cluster_index=1  →  subnet: 10.1.0.0/20,  pods: 10.1.16.0/20,  services: 10.1.32.0/20
+cluster_index=2  →  subnet: 10.2.0.0/20,  pods: 10.2.16.0/20,  services: 10.2.32.0/20
+cluster_index=3  →  subnet: 10.3.0.0/20,  pods: 10.3.16.0/20,  services: 10.3.32.0/20
+...up to 250
+```
+
+Each cluster gets 4096 IPs per range. No manual CIDR management needed — just increment the index.
 
 ---
 
@@ -262,16 +279,28 @@ Creates the VPC. Run once per project.
 
 ## 7. Pipeline 02 — GKE Cluster
 
-Creates the GKE cluster, node pool, subnet, and GCS snapshot bucket.
+Creates the GKE cluster, node pool, and (in custom mode) a dedicated subnet.
 
 | Parameter | Example | Required |
 |---|---|---|
 | `action` | `apply` / `destroy` | Yes |
 | `project` | `pg-us-n-app-259723` | Yes |
 | `clusterName` | `eck-dev-01` | **Yes** |
+| `clusterIndex` | `1` (default), `2`, `3`... | Prod only |
+
+**Dev (default mode):** Uses GCP default VPC. No subnet created. No CIDR conflicts. `clusterIndex` is ignored.
+
+**Prod (custom mode):** Creates subnet `<clusterName>-subnet-01` with auto-calculated CIDRs from `clusterIndex`. Each cluster must have a unique index.
+
+```
+# Example: Creating 3 prod clusters
+Cluster 1: clusterName=eck-prod-01, clusterIndex=1  →  10.1.0.0/20
+Cluster 2: clusterName=eck-prod-02, clusterIndex=2  →  10.2.0.0/20
+Cluster 3: clusterName=eck-prod-03, clusterIndex=3  →  10.3.0.0/20
+```
 
 **What gets created:**
-- Subnet: `<clusterName>-subnet-01`
+- Subnet: `<clusterName>-subnet-01` (custom mode only)
 - GKE cluster: Regional, 3 zones, Kubernetes 1.30
 - Node pool: `elastic-pool` — 3 × `n1-highmem-16`, `pd-ssd`
 - GCS bucket: `<clusterName>-bucket-01` (for ES snapshots)

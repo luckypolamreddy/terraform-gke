@@ -25,9 +25,20 @@ resource "google_container_cluster" "cluster" {
   # Public cluster - no private endpoint or private nodes
 
   # VPC-native networking (required for GKE)
-  ip_allocation_policy {
-    cluster_secondary_range_name  = var.pods_secondary_range_name
-    services_secondary_range_name = var.services_secondary_range_name
+  # When using default VPC (empty range names), GKE auto-allocates pod/service CIDRs
+  dynamic "ip_allocation_policy" {
+    for_each = var.pods_secondary_range_name != "" ? [1] : []
+    content {
+      cluster_secondary_range_name  = var.pods_secondary_range_name
+      services_secondary_range_name = var.services_secondary_range_name
+    }
+  }
+
+  dynamic "ip_allocation_policy" {
+    for_each = var.pods_secondary_range_name == "" ? [1] : []
+    content {
+      # Empty block = GKE auto-allocates pod and service CIDRs
+    }
   }
 
   networking_mode = "VPC_NATIVE"

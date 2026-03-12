@@ -6,11 +6,12 @@ project_id = "pg-us-e-app-012345"
 region     = "us-east1"
 location   = "us-east1"
 
-# Network (subnet_name is auto-generated as <cluster_name>-subnet-01)
+# Network — Custom VPC for prod (dedicated subnets per cluster)
+# cluster_index auto-calculates unique CIDRs: 10.<index>.0.0/20
+# Pass -var=cluster_index=N at pipeline runtime (1, 2, 3...)
+network_mode  = "custom"
 vpc_self_link = "projects/pg-us-e-app-012345/global/networks/pg-us-e-app-012345-vpc"
-subnet_cidr   = "10.20.0.0/20"
-pods_cidr     = "10.20.16.0/20"
-services_cidr = "10.20.32.0/20"
+# cluster_index is passed as pipeline parameter (no hardcoded CIDRs)
 
 # Cluster (cluster_name is provided at pipeline runtime)
 kubernetes_version = "1.30"

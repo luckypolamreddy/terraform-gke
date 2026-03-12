@@ -6,11 +6,9 @@ project_id = "pg-us-n-app-259723"
 region     = "us-east1"
 location   = "us-east1"
 
-# Network (subnet_name is auto-generated as <cluster_name>-subnet-01)
-vpc_self_link = "projects/pg-us-n-app-259723/global/networks/pg-us-n-app-259723-vpc"
-subnet_cidr   = "10.10.0.0/20"
-pods_cidr     = "10.10.16.0/20"
-services_cidr = "10.10.32.0/20"
+# Network — Use default VPC for dev (no foundation pipeline needed)
+# GKE auto-allocates pod/service CIDRs, no CIDR conflicts between clusters
+network_mode = "default"
 
 # Cluster (cluster_name is provided at pipeline runtime)
 kubernetes_version = "1.30"

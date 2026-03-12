@@ -13,25 +13,37 @@ variable "location" {
   type        = string
 }
 
-# Network
+# Network mode: "default" uses existing default VPC, "custom" creates a new subnet
+variable "network_mode" {
+  description = "Network mode: 'default' uses the GCP default VPC/subnet, 'custom' creates a dedicated subnet"
+  type        = string
+  default     = "custom"
+
+  validation {
+    condition     = contains(["default", "custom"], var.network_mode)
+    error_message = "network_mode must be 'default' or 'custom'."
+  }
+}
+
 variable "vpc_self_link" {
-  description = "Self link of the VPC (from foundation stack output)"
+  description = "Self link of the VPC. Required for custom mode. Ignored in default mode."
   type        = string
+  default     = ""
 }
 
-variable "subnet_cidr" {
-  description = "CIDR range for the subnet"
-  type        = string
-}
+# Cluster index for auto-CIDR calculation (1, 2, 3...)
+# Each index gets a unique /20 block within 10.0.0.0/8
+# Index 1: subnet=10.1.0.0/20, pods=10.1.16.0/20, services=10.1.32.0/20
+# Index 2: subnet=10.2.0.0/20, pods=10.2.16.0/20, services=10.2.32.0/20
+variable "cluster_index" {
+  description = "Cluster index (1-250) for auto-calculating non-overlapping CIDRs. Only used in custom mode."
+  type        = number
+  default     = 1
 
-variable "pods_cidr" {
-  description = "CIDR range for pods secondary range"
-  type        = string
-}
-
-variable "services_cidr" {
-  description = "CIDR range for services secondary range"
-  type        = string
+  validation {
+    condition     = var.cluster_index >= 1 && var.cluster_index <= 250
+    error_message = "cluster_index must be between 1 and 250."
+  }
 }
 
 # Cluster

@@ -29,6 +29,11 @@ parameters:
     displayName: 'Cluster Name'
     type: string
 
+  - name: clusterIndex
+    displayName: 'Cluster Index (for auto CIDR - prod only, 1-250)'
+    type: number
+    default: 1
+
 variables:
   - group: gcp-credentials-${{ parameters.project }}
 
@@ -55,7 +60,7 @@ stages:
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/cluster.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
                     backendPrefix: 'cluster/${{ parameters.project }}/${{ parameters.clusterName }}'
-                    extraVars: '-var=cluster_name=${{ parameters.clusterName }}'
+                    extraVars: '-var=cluster_name=${{ parameters.clusterName }} -var=cluster_index=${{ parameters.clusterIndex }}'
 
   # Stage 2: Apply (only when action=apply)
   - stage: Apply
@@ -78,7 +83,7 @@ stages:
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/cluster.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
                     backendPrefix: 'cluster/${{ parameters.project }}/${{ parameters.clusterName }}'
-                    extraVars: '-var=cluster_name=${{ parameters.clusterName }}'
+                    extraVars: '-var=cluster_name=${{ parameters.clusterName }} -var=cluster_index=${{ parameters.clusterIndex }}'
 
   # Stage 3: Destroy (only when action=destroy)
   - stage: Destroy
@@ -101,4 +106,4 @@ stages:
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/cluster.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
                     backendPrefix: 'cluster/${{ parameters.project }}/${{ parameters.clusterName }}'
-                    extraVars: '-var=cluster_name=${{ parameters.clusterName }}'
+                    extraVars: '-var=cluster_name=${{ parameters.clusterName }} -var=cluster_index=${{ parameters.clusterIndex }}'

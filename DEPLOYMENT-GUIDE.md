@@ -7,36 +7,55 @@
 ```
 Azure DevOps Pipelines
         │
-        ├── 01-foundation.yml       ← VPC (run once per project)
-        ├── 02-cluster.yml          ← GKE cluster + node pool + GCS bucket
+        ├── 01-foundation.yml       ← VPC (prod only, skip for dev)
+        ├── 02-cluster.yml          ← GKE cluster + node pool (+ subnet in custom mode)
         ├── 03-backup.yml           ← GKE backup plan (pause / destroy lifecycle)
         ├── 04-eck-deploy.yml       ← ECK operator + Elasticsearch + Kibana
         ├── 05-eck-destroy.yml      ← Tear down ECK stack
         ├── 06-monitoring-self.yml  ← Self-monitoring (Metricbeat + Filebeat)
         └── 07-monitoring-dedicated.yml ← Dedicated monitoring cluster
 
-GCP Project
-  └── VPC
-       └── GKE Regional Cluster (us-east1, 3 zones)
-            ├── GCS Bucket (snapshots, auto-created with cluster)
-            └── 3 × n1-highmem-16 nodes
-                 ├── Elasticsearch (3 pods)
-                 └── Kibana (2 pods)
+Dev (default VPC mode):
+  GCP Project
+    └── default VPC (pre-existing)
+         └── default subnet (auto-allocated CIDRs)
+              └── GKE Regional Cluster (us-east1, 3 zones)
+                   ├── Elasticsearch (3 pods)
+                   └── Kibana (2 pods)
+
+Prod (custom VPC mode):
+  GCP Project
+    └── Custom VPC (via 01-foundation)
+         └── <cluster>-subnet-01 (CIDRs from cluster_index)
+              └── GKE Regional Cluster (us-east1, 3 zones)
+                   ├── Elasticsearch (3 pods)
+                   └── Kibana (2 pods)
 ```
 
 ---
 
 ## 2. Execution Order
 
-### Deploy (new environment)
+### Deploy — Dev (default VPC, no foundation needed)
 
 | Step | Pipeline | Action | What it does |
 |------|----------|--------|-------------|
-| 1 | `01-foundation.yml` | `apply` | Creates VPC (one-time per project) |
-| 2 | `02-cluster.yml` | `apply` | Creates GKE cluster + node pool + GCS bucket |
+| 1 | `02-cluster.yml` | `apply` | Creates GKE cluster in default VPC (no CIDR config needed) |
+| 2 | `04-eck-deploy.yml` | run | Deploys ECK operator, ES, Kibana, snapshots, SLM |
+| 3 | `03-backup.yml` | `apply` | Creates GKE backup plan (daily backups) |
+| 4 | `06-monitoring-self.yml` | `deploy` | Enables self-monitoring (optional) |
+
+### Deploy — Prod (custom VPC, unique CIDRs per cluster)
+
+| Step | Pipeline | Action | What it does |
+|------|----------|--------|-------------|
+| 1 | `01-foundation.yml` | `apply` | Creates custom VPC (one-time per project) |
+| 2 | `02-cluster.yml` | `apply` | Creates GKE cluster + dedicated subnet (pass `clusterIndex`) |
 | 3 | `04-eck-deploy.yml` | run | Deploys ECK operator, ES, Kibana, snapshots, SLM |
 | 4 | `03-backup.yml` | `apply` | Creates GKE backup plan (daily backups) |
 | 5 | `06-monitoring-self.yml` | `deploy` | Enables self-monitoring |
+
+> **Multi-cluster prod:** Each cluster needs a unique `clusterIndex` (1, 2, 3...) to get non-overlapping CIDRs. Dev clusters use default VPC and don't need this.
 
 ### Teardown (decommission)
 
@@ -44,10 +63,10 @@ GCP Project
 |------|----------|--------|-------------|
 | 1 | `03-backup.yml` | `pause` | Pauses backup schedule (keeps backups 7 days) |
 | 2 | `05-eck-destroy.yml` | run | Removes ECK stack from GKE |
-| 3 | `02-cluster.yml` | `destroy` | Removes cluster + subnet + GCS bucket |
+| 3 | `02-cluster.yml` | `destroy` | Removes cluster (+ subnet in custom mode) |
 | 4 | *(wait 7 days)* | — | Backup retention auto-expires old backups |
 | 5 | `03-backup.yml` | `destroy` | Cleans up empty backup plan |
-| 6 | `01-foundation.yml` | `destroy` | Removes VPC (only if decommissioning project) |
+| 6 | `01-foundation.yml` | `destroy` | Removes custom VPC (prod only, skip for dev) |
 
 > **Warning:** Destroying the cluster (step 3) deletes all PVCs and ES data. The GKE backups from step 1 remain available for 7 days for restore if needed.
 
@@ -60,22 +79,34 @@ This section provides the exact steps an operator should follow for a fresh depl
 ### Phase 1: Infrastructure Setup
 
 ```
-STEP 1 — Create VPC
+STEP 1 — Create VPC (PROD ONLY — skip for Dev)
 ─────────────────────────────────────────────────
 Pipeline:    01-foundation.yml
-Parameters:  action=apply, project=pg-us-n-app-259723
+Parameters:  action=apply, project=pg-us-e-app-012345
 Run once:    Yes (one-time per GCP project)
 Wait for:    Pipeline completes (~3 min)
 Verify:      VPC exists in GCP Console → VPC Network
+NOTE:        Dev uses "default" VPC — skip this step entirely.
 ```
 
 ```
 STEP 2 — Create GKE Cluster
 ─────────────────────────────────────────────────
 Pipeline:    02-cluster.yml
-Parameters:  action=apply, project=pg-us-n-app-259723, clusterName=<name>
+
+Dev example:
+  Parameters:  action=apply, project=pg-us-n-app-259723, clusterName=eck-dev-01
+  Network:     Uses default VPC (clusterIndex ignored)
+
+Prod example (first cluster):
+  Parameters:  action=apply, project=pg-us-e-app-012345, clusterName=eck-prod-01, clusterIndex=1
+  Network:     Creates subnet eck-prod-01-subnet-01 with CIDRs 10.1.0.0/20
+
+Prod example (second cluster):
+  Parameters:  action=apply, project=pg-us-e-app-012345, clusterName=eck-prod-02, clusterIndex=2
+  Network:     Creates subnet eck-prod-02-subnet-01 with CIDRs 10.2.0.0/20
+
 Wait for:    Pipeline completes (~15 min)
-Creates:     GKE cluster, node pool, subnet, GCS bucket
 Verify:      gcloud container clusters list --project=<project>
              kubectl get nodes  (expect 3 Ready)
 ```
@@ -268,12 +299,14 @@ Create `gcp-credentials-<project>` in Azure DevOps Library:
 
 ## 6. Pipeline 01 — Foundation (VPC)
 
-Creates the VPC. Run once per project.
+Creates a custom VPC. **Prod only** — Dev uses the GCP default VPC and skips this pipeline entirely.
 
 | Parameter | Value |
 |---|---|
 | `action` | `apply` or `destroy` |
 | `project` | Select your project |
+
+> **Dev note:** When `network_mode = "default"` (in dev tfvars), no VPC or subnet is created. The cluster uses GCP's pre-existing `default` network. You can spin up multiple dev clusters without any CIDR conflicts.
 
 ---
 

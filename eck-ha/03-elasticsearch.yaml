@@ -1,0 +1,261 @@
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: _ES_NAME_
+  namespace: _NAMESPACE_
+spec:
+  version: _ES_OPERATOR_VERSION_
+
+  # Volume claim delete policy - only delete PVCs on scale-down, not on cluster delete
+  # This prevents accidental data loss
+  volumeClaimDeletePolicy: DeleteOnScaledownOnly
+
+  # Pod disruption budget - ensure at least 2 nodes available during disruptions
+  podDisruptionBudget:
+    spec:
+      minAvailable: 2
+      selector:
+        matchLabels:
+          elasticsearch.k8s.elastic.co/cluster-name: _ES_NAME_
+
+  # HTTPS with auto-generated self-signed certificates (ECK default)
+  http:
+    tls:
+      selfSignedCertificate:
+        disabled: false
+
+  # Self-monitoring (metrics + logs to same cluster)
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: _ES_NAME_
+          namespace: _NAMESPACE_
+    logs:
+      elasticsearchRefs:
+        - name: _ES_NAME_
+          namespace: _NAMESPACE_
+
+  # GCS credentials for snapshot/restore
+  secureSettings:
+    - secretName: gcs-credentials
+
+  # ============================================================
+  # Node Sets
+  # ============================================================
+  nodeSets:
+
+    # ----------------------------------------------------------
+    # Master Nodes (dedicated)
+    # Deployed on general-pool (no taints)
+    # 3 nodes for quorum (minimum for HA)
+    # ----------------------------------------------------------
+    - name: master
+      count: _MASTER_COUNT_
+      config:
+        node.roles: ["master"]
+        node.store.allow_mmap: true
+        # Cluster-level settings
+        cluster.routing.allocation.awareness.attributes: zone
+        cluster.routing.allocation.awareness.force.zone.values: us-east1-b,us-east1-c,us-east1-d
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: _MASTER_STORAGE_Gi
+            storageClassName: standard-rwo
+      podTemplate:
+        metadata:
+          labels:
+            elastic-role: master
+        spec:
+          # Anti-affinity: spread master pods across different nodes
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: node-pool
+                        operator: In
+                        values:
+                          - general-pool
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/cluster-name: _ES_NAME_
+                      elastic-role: master
+                  topologyKey: kubernetes.io/hostname
+          # Init container to set vm.max_map_count
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms_MASTER_HEAP_ -Xmx_MASTER_HEAP_"
+                # Zone awareness via downward API
+                - name: node.attr.zone
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.annotations['topology.kubernetes.io/zone']
+              resources:
+                requests:
+                  memory: _MASTER_MEMORY_Gi
+                  cpu: _MASTER_CPU_
+                limits:
+                  memory: _MASTER_MEMORY_LIMIT_Gi
+                  cpu: _MASTER_CPU_LIMIT_
+
+    # ----------------------------------------------------------
+    # Hot Data Nodes
+    # Deployed on hot-pool (tainted: elastic-role=hot:NoSchedule)
+    # High-performance SSD storage for active indexing and search
+    # ----------------------------------------------------------
+    - name: hot
+      count: _HOT_COUNT_
+      config:
+        node.roles: ["data_hot", "data_content", "ingest", "transform"]
+        node.store.allow_mmap: true
+        node.attr.data: hot
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: _HOT_STORAGE_Gi
+            storageClassName: premium-rwo
+      podTemplate:
+        metadata:
+          labels:
+            elastic-role: hot
+        spec:
+          # Toleration for hot-pool taint
+          tolerations:
+            - key: "elastic-role"
+              operator: "Equal"
+              value: "hot"
+              effect: "NoSchedule"
+          # Affinity: must run on hot-pool nodes, spread across hosts
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: node-pool
+                        operator: In
+                        values:
+                          - hot-pool
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/cluster-name: _ES_NAME_
+                      elastic-role: hot
+                  topologyKey: kubernetes.io/hostname
+          # Init container to set vm.max_map_count
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms_HOT_HEAP_ -Xmx_HOT_HEAP_"
+                - name: node.attr.zone
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.annotations['topology.kubernetes.io/zone']
+              resources:
+                requests:
+                  memory: _HOT_MEMORY_Gi
+                  cpu: _HOT_CPU_
+                limits:
+                  memory: _HOT_MEMORY_LIMIT_Gi
+                  cpu: _HOT_CPU_LIMIT_
+
+    # ----------------------------------------------------------
+    # Cold Data Nodes
+    # Deployed on cold-pool (tainted: elastic-role=cold:NoSchedule)
+    # Cost-efficient HDD storage for infrequently accessed data
+    # ----------------------------------------------------------
+    - name: cold
+      count: _COLD_COUNT_
+      config:
+        node.roles: ["data_cold"]
+        node.store.allow_mmap: true
+        node.attr.data: cold
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: _COLD_STORAGE_Gi
+            storageClassName: standard-rwo
+      podTemplate:
+        metadata:
+          labels:
+            elastic-role: cold
+        spec:
+          # Toleration for cold-pool taint
+          tolerations:
+            - key: "elastic-role"
+              operator: "Equal"
+              value: "cold"
+              effect: "NoSchedule"
+          # Affinity: must run on cold-pool nodes, spread across hosts
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: node-pool
+                        operator: In
+                        values:
+                          - cold-pool
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/cluster-name: _ES_NAME_
+                      elastic-role: cold
+                  topologyKey: kubernetes.io/hostname
+          # Init container to set vm.max_map_count
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms_COLD_HEAP_ -Xmx_COLD_HEAP_"
+                - name: node.attr.zone
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.annotations['topology.kubernetes.io/zone']
+              resources:
+                requests:
+                  memory: _COLD_MEMORY_Gi
+                  cpu: _COLD_CPU_
+                limits:
+                  memory: _COLD_MEMORY_LIMIT_Gi
+                  cpu: _COLD_CPU_LIMIT_

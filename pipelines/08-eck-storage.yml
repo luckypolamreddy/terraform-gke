@@ -1,0 +1,88 @@
+# Pipeline: ECK Storage
+# Creates/destroys GCS buckets for hot/cold snapshot repositories
+
+trigger: none
+
+parameters:
+  - name: action
+    displayName: 'Action'
+    type: string
+    default: apply
+    values:
+      - apply
+      - destroy
+
+  - name: project
+    displayName: 'GCP Project'
+    type: string
+    default: pg-us-n-app-259723
+    values:
+      - pg-us-n-app-259723
+      - pg-us-e-app-012345
+
+  - name: clusterName
+    displayName: 'GKE Cluster Name (used as bucket prefix)'
+    type: string
+
+variables:
+  - group: gcp-credentials-${{ parameters.project }}
+  - name: tfBackendBucket
+    value: ${{ parameters.project }}-tf-state
+  - name: tfBackendPrefix
+    value: eck-storage/${{ parameters.project }}/${{ parameters.clusterName }}
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  # Stage 1: Plan (always runs)
+  - stage: Plan
+    displayName: 'Terraform Plan'
+    jobs:
+      - job: Plan
+        displayName: 'Plan ECK Storage'
+        steps:
+          - checkout: self
+          - template: templates/terraform-plan-steps.yml
+            parameters:
+              workingDirectory: $(System.DefaultWorkingDirectory)/stacks/eck-storage
+              tfvarsFile: $(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/eck-storage.tfvars
+              backendBucket: $(tfBackendBucket)
+              backendPrefix: $(tfBackendPrefix)
+              extraVars: '-var=cluster_name=${{ parameters.clusterName }}'
+
+  # Stage 2: Apply
+  - stage: Apply
+    displayName: 'Terraform Apply'
+    dependsOn: Plan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'))
+    jobs:
+      - job: Apply
+        displayName: 'Create GCS Buckets'
+        steps:
+          - checkout: self
+          - template: templates/terraform-apply-steps.yml
+            parameters:
+              workingDirectory: $(System.DefaultWorkingDirectory)/stacks/eck-storage
+              tfvarsFile: $(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/eck-storage.tfvars
+              backendBucket: $(tfBackendBucket)
+              backendPrefix: $(tfBackendPrefix)
+              extraVars: '-var=cluster_name=${{ parameters.clusterName }}'
+
+  # Stage 3: Destroy
+  - stage: Destroy
+    displayName: 'Terraform Destroy'
+    dependsOn: Plan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'destroy'))
+    jobs:
+      - job: Destroy
+        displayName: 'Destroy GCS Buckets'
+        steps:
+          - checkout: self
+          - template: templates/terraform-destroy-steps.yml
+            parameters:
+              workingDirectory: $(System.DefaultWorkingDirectory)/stacks/eck-storage
+              tfvarsFile: $(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/eck-storage.tfvars
+              backendBucket: $(tfBackendBucket)
+              backendPrefix: $(tfBackendPrefix)
+              extraVars: '-var=cluster_name=${{ parameters.clusterName }}'

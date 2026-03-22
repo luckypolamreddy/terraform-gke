@@ -1,0 +1,136 @@
+# Pipeline: ECK HA Deploy
+# Deploys ECK operator with HA Elasticsearch (master + hot + cold) and Kibana
+# Registers hot/cold GCS snapshot repositories with SLM policies
+
+trigger: none
+
+parameters:
+  - name: project
+    displayName: 'GCP Project'
+    type: string
+    default: pg-us-n-app-259723
+    values:
+      - pg-us-n-app-259723
+      - pg-us-e-app-012345
+
+  - name: clusterName
+    displayName: 'GKE Cluster Name'
+    type: string
+
+variables:
+  - group: gcp-credentials-${{ parameters.project }}
+  # Variable group must contain: GCP_SA_KEY, GCP_PROJECT_ID
+
+  # ECK / Elastic versions
+  - name: ECK_OPERATOR_VERSION
+    value: '9.3.1'
+  - name: elasticsearchOperatorVersion
+    value: '9.3.1'
+  - name: CLUSTER_LOCATION
+    value: us-east1
+
+  # Common names
+  - name: elasticsearchName
+    value: elasticsearch
+  - name: eckNamespace
+    value: elastic-stack
+  - name: kibanaName
+    value: kibana
+
+  # ----------------------------------------------------------
+  # Master node settings (3 dedicated masters on general-pool)
+  # n1-standard-4: 4 vCPU, 15GB RAM
+  # ----------------------------------------------------------
+  - name: masterCount
+    value: '3'
+  - name: masterHeap
+    value: '2g'
+  - name: masterMemory
+    value: '4'
+  - name: masterMemoryLimit
+    value: '4'
+  - name: masterCpu
+    value: '1'
+  - name: masterCpuLimit
+    value: '2'
+  - name: masterStorage
+    value: '10'
+
+  # ----------------------------------------------------------
+  # Hot data node settings (3 nodes on hot-pool)
+  # n1-highmem-8: 8 vCPU, 52GB RAM
+  # ----------------------------------------------------------
+  - name: hotCount
+    value: '3'
+  - name: hotHeap
+    value: '16g'
+  - name: hotMemory
+    value: '32'
+  - name: hotMemoryLimit
+    value: '40'
+  - name: hotCpu
+    value: '4'
+  - name: hotCpuLimit
+    value: '7'
+  - name: hotStorage
+    value: '500'
+
+  # ----------------------------------------------------------
+  # Cold data node settings (3 nodes on cold-pool)
+  # n1-standard-4: 4 vCPU, 15GB RAM
+  # ----------------------------------------------------------
+  - name: coldCount
+    value: '3'
+  - name: coldHeap
+    value: '4g'
+  - name: coldMemory
+    value: '8'
+  - name: coldMemoryLimit
+    value: '10'
+  - name: coldCpu
+    value: '1'
+  - name: coldCpuLimit
+    value: '3'
+  - name: coldStorage
+    value: '1000'
+
+  # ----------------------------------------------------------
+  # Kibana settings (2 replicas on general-pool)
+  # ----------------------------------------------------------
+  - name: kibanaNoOfNodes
+    value: '2'
+  - name: kibanaMemory
+    value: '2'
+  - name: kibanaMemoryLimit
+    value: '4'
+  - name: kibanaCpu
+    value: '1'
+  - name: kibanaCpuLimit
+    value: '2'
+
+  # GCS buckets for snapshots (auto-derived from cluster name)
+  - name: HOT_BUCKET_NAME
+    value: ${{ parameters.clusterName }}-hot-snapshots
+  - name: COLD_BUCKET_NAME
+    value: ${{ parameters.clusterName }}-cold-snapshots
+
+  # Working directory for ECK HA manifests
+  - name: workingDirectory
+    value: '$(System.DefaultWorkingDirectory)/eck-ha'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: ECK_HA_Deploy
+    displayName: 'Deploy ECK HA Stack'
+    jobs:
+      - job: DeployECK
+        displayName: 'ECK HA Deployment'
+        timeoutInMinutes: 60
+        steps:
+          - checkout: self
+
+          - template: templates/eck-ha-deployment-steps.yaml
+            parameters:
+              clusterName: ${{ parameters.clusterName }}

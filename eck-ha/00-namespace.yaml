@@ -1,0 +1,8 @@
+# elastic-system namespace is auto-created by ECK operator deployment
+# Only need to create elastic-stack for workloads
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: elastic-stack
+  labels:
+    app.kubernetes.io/managed-by: eck

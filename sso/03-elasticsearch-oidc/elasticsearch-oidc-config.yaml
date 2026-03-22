@@ -1,0 +1,234 @@
+# Elasticsearch OIDC Configuration Patch
+# This patches the existing Elasticsearch cluster to add Azure AD OIDC authentication.
+#
+# Prerequisites:
+#   1. Azure AD App Registration completed (see 01-azure-ad-setup/)
+#   2. OIDC client secret created in cluster (see 01-azure-ad-setup/oidc-secret.yaml)
+#   3. ECK Enterprise license active (OIDC requires Platinum+)
+#
+# Usage:
+#   kubectl apply -f elasticsearch-oidc-config.yaml
+#
+# NOTE: This replaces the Elasticsearch spec. Merge with your existing
+#       elasticsearch.yaml (from eck-ha/ or gke-eck-complete/) as needed.
+
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: elasticsearch
+  namespace: elastic-stack
+spec:
+  version: 9.1.3
+  # Mount OIDC client secret into all nodes
+  secureSettings:
+    - secretName: gcs-credentials
+    - secretName: oidc-client-secret
+      entries:
+        - key: client-secret
+          path: xpack.security.authc.realms.oidc.azure_ad.rp.client_secret
+  nodeSets:
+    # -------------------------------------------------------
+    # Master Nodes (3 dedicated masters)
+    # -------------------------------------------------------
+    - name: master
+      count: 3
+      config:
+        node.roles: ["master"]
+        # OIDC Realm Configuration - Azure AD
+        xpack.security.authc.realms.oidc.azure_ad:
+          order: 2
+          rp.client_id: "${OIDC_CLIENT_ID}"
+          rp.response_type: "code"
+          rp.redirect_uri: "https://${KIBANA_HOST}/api/security/oidc/callback"
+          rp.post_logout_redirect_uri: "https://${KIBANA_HOST}/security/logged_out"
+          op.issuer: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/v2.0"
+          op.authorization_endpoint: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/authorize"
+          op.token_endpoint: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token"
+          op.jwkset_path: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/discovery/v2.0/keys"
+          op.userinfo_endpoint: "https://graph.microsoft.com/oidc/userinfo"
+          op.endsession_endpoint: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/logout"
+          claims.principal: "email"
+          claims.groups: "groups"
+          claims.name: "name"
+          claims.mail: "email"
+          claim_patterns.principal: "^([^@]+)@pwc\\.com$"
+        # Keep native realm for service accounts and elastic superuser
+        xpack.security.authc.realms.native.native1:
+          order: 0
+        xpack.security.authc.realms.file.file1:
+          order: 1
+        # Token service required for OIDC
+        xpack.security.authc.token.enabled: true
+      podTemplate:
+        spec:
+          containers:
+            - name: elasticsearch
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: 4Gi
+                limits:
+                  cpu: "2"
+                  memory: 4Gi
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/statefulset-name: elasticsearch-es-master
+                  topologyKey: kubernetes.io/hostname
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: premium-rwo
+            resources:
+              requests:
+                storage: 10Gi
+
+    # -------------------------------------------------------
+    # Hot Data Nodes (3 nodes)
+    # -------------------------------------------------------
+    - name: hot
+      count: 3
+      config:
+        node.roles: ["data_hot", "data_content", "ingest", "transform"]
+        # OIDC config must be on all nodes
+        xpack.security.authc.realms.oidc.azure_ad:
+          order: 2
+          rp.client_id: "${OIDC_CLIENT_ID}"
+          rp.response_type: "code"
+          rp.redirect_uri: "https://${KIBANA_HOST}/api/security/oidc/callback"
+          rp.post_logout_redirect_uri: "https://${KIBANA_HOST}/security/logged_out"
+          op.issuer: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/v2.0"
+          op.authorization_endpoint: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/authorize"
+          op.token_endpoint: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token"
+          op.jwkset_path: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/discovery/v2.0/keys"
+          op.userinfo_endpoint: "https://graph.microsoft.com/oidc/userinfo"
+          op.endsession_endpoint: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/logout"
+          claims.principal: "email"
+          claims.groups: "groups"
+          claims.name: "name"
+          claims.mail: "email"
+          claim_patterns.principal: "^([^@]+)@pwc\\.com$"
+        xpack.security.authc.realms.native.native1:
+          order: 0
+        xpack.security.authc.realms.file.file1:
+          order: 1
+        xpack.security.authc.token.enabled: true
+      podTemplate:
+        spec:
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms16g -Xmx16g"
+              resources:
+                requests:
+                  cpu: "4"
+                  memory: 32Gi
+                limits:
+                  cpu: "7"
+                  memory: 40Gi
+          nodeSelector:
+            cloud.google.com/gke-nodepool: hot-pool
+          tolerations:
+            - key: "elastic-role"
+              operator: "Equal"
+              value: "hot"
+              effect: "NoSchedule"
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchLabels:
+                        elasticsearch.k8s.elastic.co/statefulset-name: elasticsearch-es-hot
+                    topologyKey: kubernetes.io/hostname
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: premium-rwo
+            resources:
+              requests:
+                storage: 500Gi
+
+    # -------------------------------------------------------
+    # Cold Data Nodes (3 nodes)
+    # -------------------------------------------------------
+    - name: cold
+      count: 3
+      config:
+        node.roles: ["data_cold"]
+        # OIDC config must be on all nodes
+        xpack.security.authc.realms.oidc.azure_ad:
+          order: 2
+          rp.client_id: "${OIDC_CLIENT_ID}"
+          rp.response_type: "code"
+          rp.redirect_uri: "https://${KIBANA_HOST}/api/security/oidc/callback"
+          rp.post_logout_redirect_uri: "https://${KIBANA_HOST}/security/logged_out"
+          op.issuer: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/v2.0"
+          op.authorization_endpoint: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/authorize"
+          op.token_endpoint: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token"
+          op.jwkset_path: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/discovery/v2.0/keys"
+          op.userinfo_endpoint: "https://graph.microsoft.com/oidc/userinfo"
+          op.endsession_endpoint: "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/logout"
+          claims.principal: "email"
+          claims.groups: "groups"
+          claims.name: "name"
+          claims.mail: "email"
+          claim_patterns.principal: "^([^@]+)@pwc\\.com$"
+        xpack.security.authc.realms.native.native1:
+          order: 0
+        xpack.security.authc.realms.file.file1:
+          order: 1
+        xpack.security.authc.token.enabled: true
+      podTemplate:
+        spec:
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms4g -Xmx4g"
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: 8Gi
+                limits:
+                  cpu: "3"
+                  memory: 10Gi
+          nodeSelector:
+            cloud.google.com/gke-nodepool: cold-pool
+          tolerations:
+            - key: "elastic-role"
+              operator: "Equal"
+              value: "cold"
+              effect: "NoSchedule"
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchLabels:
+                        elasticsearch.k8s.elastic.co/statefulset-name: elasticsearch-es-cold
+                    topologyKey: kubernetes.io/hostname
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: standard-rwo
+            resources:
+              requests:
+                storage: 500Gi

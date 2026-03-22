@@ -1,0 +1,213 @@
+# Kubernetes RBAC for Team Members
+# Provides namespace-level access control for @gcp.pwc.com users.
+#
+# This complements GKE IAM bindings (02-gke-rbac/) with fine-grained
+# namespace-level permissions within the elastic-stack namespace.
+
+---
+# -------------------------------------------------------
+# ClusterRoles (reusable across namespaces)
+# -------------------------------------------------------
+
+# Admin: Full access to elastic-stack namespace resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: elastic-stack-admin
+  labels:
+    app.kubernetes.io/name: elasticsearch-sso
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "services", "configmaps", "secrets", "persistentvolumeclaims", "events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["elasticsearch.k8s.elastic.co"]
+    resources: ["elasticsearches"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kibana.k8s.elastic.co"]
+    resources: ["kibanas"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["beat.k8s.elastic.co"]
+    resources: ["beats"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+# Editor: Deploy and manage workloads, no secret/RBAC modification
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: elastic-stack-editor
+  labels:
+    app.kubernetes.io/name: elasticsearch-sso
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps", "persistentvolumeclaims", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["elasticsearch.k8s.elastic.co"]
+    resources: ["elasticsearches"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["kibana.k8s.elastic.co"]
+    resources: ["kibanas"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["beat.k8s.elastic.co"]
+    resources: ["beats"]
+    verbs: ["get", "list", "watch"]
+
+---
+# Viewer: Read-only access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: elastic-stack-viewer
+  labels:
+    app.kubernetes.io/name: elasticsearch-sso
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps", "persistentvolumeclaims", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["elasticsearch.k8s.elastic.co"]
+    resources: ["elasticsearches"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["kibana.k8s.elastic.co"]
+    resources: ["kibanas"]
+    verbs: ["get", "list", "watch"]
+
+---
+# -------------------------------------------------------
+# RoleBindings - Admin users
+# -------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: elastic-stack-admins
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/name: elasticsearch-sso
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: elastic-stack-admin
+subjects:
+  - kind: User
+    name: teamlead1@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: teamlead2@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: devops1@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: devops2@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+
+---
+# -------------------------------------------------------
+# RoleBindings - Editor users
+# -------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: elastic-stack-editors
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/name: elasticsearch-sso
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: elastic-stack-editor
+subjects:
+  - kind: User
+    name: developer1@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: developer2@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: developer3@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: developer4@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: developer5@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: developer6@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: developer7@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: developer8@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: developer9@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: developer10@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+
+---
+# -------------------------------------------------------
+# RoleBindings - Viewer users
+# -------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: elastic-stack-viewers
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/name: elasticsearch-sso
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: elastic-stack-viewer
+subjects:
+  - kind: User
+    name: qa1@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: qa2@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: qa3@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: analyst1@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: analyst2@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: manager1@gcp.pwc.com
+    apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,184 @@
+# Elasticsearch Role Mappings for Azure AD SSO
+# These map Azure AD groups to Elasticsearch roles.
+#
+# Apply after Elasticsearch is running with OIDC configured:
+#   kubectl apply -f role-mappings.yaml
+#
+# The Job connects to Elasticsearch and creates role mappings via the API.
+# Azure AD group IDs must be replaced with actual Object IDs from Azure AD.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: es-sso-role-mappings
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/name: elasticsearch-sso
+    app.kubernetes.io/component: role-mappings
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: role-mapper
+          image: curlimages/curl:8.5.0
+          env:
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-es-elastic-user
+                  key: elastic
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              ES_URL="https://elasticsearch-es-http.elastic-stack.svc:9200"
+              AUTH="elastic:${ES_PASSWORD}"
+              CURL_OPTS="--cacert /mnt/elastic-internal/http-certs/ca.crt -s -w \n%{http_code}"
+
+              echo "=== Creating Elasticsearch Roles for SSO ==="
+
+              # -------------------------------------------------------
+              # Custom Roles
+              # -------------------------------------------------------
+
+              # Editor role - read/write to data indices, manage Kibana
+              echo "Creating eck_editor role..."
+              curl $CURL_OPTS -X PUT "$ES_URL/_security/role/eck_editor" \
+                -u "$AUTH" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "cluster": ["monitor", "manage_index_templates", "manage_ilm", "manage_pipeline"],
+                  "indices": [
+                    {
+                      "names": ["*"],
+                      "privileges": ["read", "write", "view_index_metadata", "manage", "create_index"],
+                      "allow_restricted_indices": false
+                    },
+                    {
+                      "names": [".kibana*", ".reporting*"],
+                      "privileges": ["all"],
+                      "allow_restricted_indices": false
+                    }
+                  ],
+                  "applications": [
+                    {
+                      "application": "kibana-.kibana",
+                      "privileges": ["feature_discover.all", "feature_dashboard.all", "feature_canvas.all", "feature_maps.all", "feature_ml.all", "feature_visualize.all", "feature_logs.all", "feature_infrastructure.all", "feature_apm.all", "feature_dev_tools.all", "feature_indexPatterns.all"],
+                      "resources": ["*"]
+                    }
+                  ]
+                }'
+
+              # Viewer role - read-only access
+              echo "Creating eck_viewer role..."
+              curl $CURL_OPTS -X PUT "$ES_URL/_security/role/eck_viewer" \
+                -u "$AUTH" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "cluster": ["monitor"],
+                  "indices": [
+                    {
+                      "names": ["*"],
+                      "privileges": ["read", "view_index_metadata"],
+                      "allow_restricted_indices": false
+                    }
+                  ],
+                  "applications": [
+                    {
+                      "application": "kibana-.kibana",
+                      "privileges": ["feature_discover.read", "feature_dashboard.read", "feature_canvas.read", "feature_maps.read", "feature_visualize.read", "feature_logs.read", "feature_infrastructure.read", "feature_apm.read"],
+                      "resources": ["*"]
+                    }
+                  ]
+                }'
+
+              # -------------------------------------------------------
+              # Role Mappings (Azure AD Group -> ES Role)
+              # -------------------------------------------------------
+
+              # IMPORTANT: Replace AZURE_AD_GROUP_ID_* with actual Azure AD
+              # Security Group Object IDs from Azure Portal.
+
+              # Admin mapping - maps ECK-Admins group to superuser
+              echo "Creating admin role mapping..."
+              curl $CURL_OPTS -X PUT "$ES_URL/_security/role_mapping/oidc_admins" \
+                -u "$AUTH" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "roles": ["superuser"],
+                  "enabled": true,
+                  "rules": {
+                    "all": [
+                      { "field": { "realm.name": "azure_ad" } },
+                      { "field": { "groups": "AZURE_AD_GROUP_ID_FOR_ECK_ADMINS" } }
+                    ]
+                  },
+                  "metadata": {
+                    "description": "Maps Azure AD ECK-Admins group to Elasticsearch superuser role"
+                  }
+                }'
+
+              # Editor mapping - maps ECK-Editors group to custom editor role
+              echo "Creating editor role mapping..."
+              curl $CURL_OPTS -X PUT "$ES_URL/_security/role_mapping/oidc_editors" \
+                -u "$AUTH" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "roles": ["eck_editor"],
+                  "enabled": true,
+                  "rules": {
+                    "all": [
+                      { "field": { "realm.name": "azure_ad" } },
+                      { "field": { "groups": "AZURE_AD_GROUP_ID_FOR_ECK_EDITORS" } }
+                    ]
+                  },
+                  "metadata": {
+                    "description": "Maps Azure AD ECK-Editors group to Elasticsearch editor role"
+                  }
+                }'
+
+              # Viewer mapping - maps ECK-Viewers group to custom viewer role
+              echo "Creating viewer role mapping..."
+              curl $CURL_OPTS -X PUT "$ES_URL/_security/role_mapping/oidc_viewers" \
+                -u "$AUTH" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "roles": ["eck_viewer"],
+                  "enabled": true,
+                  "rules": {
+                    "all": [
+                      { "field": { "realm.name": "azure_ad" } },
+                      { "field": { "groups": "AZURE_AD_GROUP_ID_FOR_ECK_VIEWERS" } }
+                    ]
+                  },
+                  "metadata": {
+                    "description": "Maps Azure AD ECK-Viewers group to Elasticsearch viewer role"
+                  }
+                }'
+
+              # Fallback: Any authenticated OIDC user without a group gets viewer
+              echo "Creating fallback role mapping..."
+              curl $CURL_OPTS -X PUT "$ES_URL/_security/role_mapping/oidc_fallback" \
+                -u "$AUTH" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "roles": ["eck_viewer"],
+                  "enabled": true,
+                  "rules": {
+                    "all": [
+                      { "field": { "realm.name": "azure_ad" } },
+                      { "field": { "username": "*@pwc.com" } }
+                    ]
+                  },
+                  "metadata": {
+                    "description": "Fallback: any @pwc.com OIDC user gets viewer access"
+                  }
+                }'
+
+              echo ""
+              echo "=== SSO Role Mappings Created Successfully ==="
+              echo "Roles: eck_editor, eck_viewer"
+              echo "Mappings: oidc_admins, oidc_editors, oidc_viewers, oidc_fallback"

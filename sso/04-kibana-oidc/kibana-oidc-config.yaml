@@ -1,0 +1,90 @@
+# Kibana OIDC Configuration
+# Configures Kibana to use Azure AD as the OIDC provider for SSO login.
+#
+# This creates a Kibana instance with:
+#   - OIDC as the primary authentication method (Azure AD / Office 365)
+#   - Basic auth as fallback for service accounts
+#   - Session timeout and security settings
+#
+# Prerequisites:
+#   1. Elasticsearch running with OIDC realm configured
+#   2. Azure AD App Registration with correct redirect URIs
+#   3. OIDC client secret deployed
+
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: kibana
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/component: sso
+spec:
+  version: 9.1.3
+  count: 2
+  elasticsearchRef:
+    name: elasticsearch
+  config:
+    # -------------------------------------------------------
+    # OIDC Authentication Configuration
+    # -------------------------------------------------------
+
+    # Server settings
+    server.name: kibana
+    server.publicBaseUrl: "https://${KIBANA_HOST}"
+
+    # Authentication providers - OIDC primary, basic as fallback
+    xpack.security.authc.providers:
+      oidc.azure_ad:
+        order: 0
+        realm: azure_ad
+        description: "Sign in with PwC Office 365"
+        icon: "logoAzure"
+      basic.basic1:
+        order: 1
+        description: "Sign in with username/password"
+
+    # Session settings
+    xpack.security.session.idleTimeout: "1h"
+    xpack.security.session.lifespan: "8h"
+    xpack.security.session.cleanupInterval: "30m"
+
+    # Security headers
+    csp.strict: true
+    csp.warnLegacyBrowsers: false
+
+    # Logging
+    logging.root.level: info
+
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kibana
+        app.kubernetes.io/component: sso
+    spec:
+      containers:
+        - name: kibana
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: 5601
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+  # Expose Kibana via LoadBalancer
+  # For production, use an Ingress controller with TLS termination instead
+  http:
+    service:
+      spec:
+        type: LoadBalancer
+    tls:
+      selfSignedCertificate:
+        disabled: false

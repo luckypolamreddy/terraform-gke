@@ -1,0 +1,86 @@
+# Network Policies for OIDC SSO Traffic
+# Allows Elasticsearch and Kibana pods to reach Azure AD OIDC endpoints.
+
+---
+# Allow Elasticsearch to reach Azure AD for OIDC token validation
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-es-oidc-egress
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/name: elasticsearch-sso
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      common.k8s.elastic.co/type: elasticsearch
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS to Azure AD (login.microsoftonline.com) and Microsoft Graph
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# Allow Kibana to reach Azure AD for OIDC redirects
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kibana-oidc-egress
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/name: elasticsearch-sso
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      common.k8s.elastic.co/type: kibana
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS to Azure AD and Elasticsearch
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 9200
+
+---
+# Allow external ingress to Kibana for SSO callback
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kibana-sso-ingress
+  namespace: elastic-stack
+  labels:
+    app.kubernetes.io/name: elasticsearch-sso
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      common.k8s.elastic.co/type: kibana
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow HTTPS traffic to Kibana (for OIDC callback and user access)
+    - ports:
+        - protocol: TCP
+          port: 5601

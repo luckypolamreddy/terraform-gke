@@ -1,0 +1,124 @@
+# Azure DevOps Pipeline - SSO Deployment
+# Deploys Single Sign-On for GKE and ECK clusters using Azure AD OIDC.
+#
+# Required Variable Groups:
+#   - eck-sso-secrets (contains Azure AD credentials)
+#     - AZURE_TENANT_ID
+#     - OIDC_CLIENT_ID
+#     - OIDC_CLIENT_SECRET
+#     - ADMIN_GROUP_ID
+#     - EDITOR_GROUP_ID
+#     - VIEWER_GROUP_ID
+
+trigger: none
+
+parameters:
+  - name: environment
+    displayName: "Target Environment"
+    type: string
+    default: nonprod
+    values:
+      - nonprod
+      - prod
+
+  - name: action
+    displayName: "Action"
+    type: string
+    default: deploy
+    values:
+      - deploy
+      - dry-run
+
+  - name: skipTerraform
+    displayName: "Skip Terraform (GKE IAM bindings)"
+    type: boolean
+    default: false
+
+variables:
+  - group: gcp-credentials
+  - group: eck-sso-secrets
+  - name: projectId
+    ${{ if eq(parameters.environment, 'nonprod') }}:
+      value: "pg-us-n-app-259723"
+    ${{ else }}:
+      value: "pg-us-e-app-012345"
+  - name: clusterName
+    ${{ if eq(parameters.environment, 'nonprod') }}:
+      value: "eck-ha-nonprod"
+    ${{ else }}:
+      value: "eck-ha-prod"
+  - name: region
+    value: "us-east1"
+  - name: kibanaHost
+    ${{ if eq(parameters.environment, 'nonprod') }}:
+      value: "kibana-nonprod.gcp.pwc.com"
+    ${{ else }}:
+      value: "kibana-prod.gcp.pwc.com"
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  - stage: DeploySSO
+    displayName: "Deploy SSO - ${{ parameters.environment }}"
+    jobs:
+      - job: SSO
+        displayName: "Configure SSO"
+        steps:
+          - checkout: self
+
+          - task: GoogleCloudSdkTool@1
+            displayName: "Install Google Cloud SDK"
+            inputs:
+              version: "latest"
+
+          - script: |
+              echo "$(GCP_SERVICE_ACCOUNT_KEY)" | base64 -d > /tmp/gcp-key.json
+              gcloud auth activate-service-account --key-file=/tmp/gcp-key.json
+              gcloud config set project $(projectId)
+            displayName: "Authenticate to GCP"
+
+          - task: TerraformInstaller@1
+            displayName: "Install Terraform"
+            inputs:
+              terraformVersion: "latest"
+
+          - script: |
+              DEPLOY_ARGS="--project $(projectId) \
+                --cluster $(clusterName) \
+                --region $(region) \
+                --tenant-id $(AZURE_TENANT_ID) \
+                --client-id $(OIDC_CLIENT_ID) \
+                --client-secret $(OIDC_CLIENT_SECRET) \
+                --kibana-host $(kibanaHost) \
+                --admin-group-id $(ADMIN_GROUP_ID) \
+                --editor-group-id $(EDITOR_GROUP_ID) \
+                --viewer-group-id $(VIEWER_GROUP_ID)"
+
+              if [ "${{ parameters.skipTerraform }}" = "True" ]; then
+                DEPLOY_ARGS="$DEPLOY_ARGS --skip-terraform"
+              fi
+
+              if [ "${{ parameters.action }}" = "dry-run" ]; then
+                DEPLOY_ARGS="$DEPLOY_ARGS --dry-run"
+              fi
+
+              chmod +x sso/deploy-sso.sh
+              ./sso/deploy-sso.sh $DEPLOY_ARGS
+            displayName: "Deploy SSO"
+            env:
+              OIDC_CLIENT_SECRET: $(OIDC_CLIENT_SECRET)
+
+          - script: |
+              echo "=== SSO Deployment Summary ==="
+              echo "Environment: ${{ parameters.environment }}"
+              echo "Project: $(projectId)"
+              echo "Cluster: $(clusterName)"
+              echo "Kibana Host: $(kibanaHost)"
+              echo ""
+              echo "=== Verify SSO ==="
+              echo "1. Open https://$(kibanaHost) in browser"
+              echo "2. Click 'Sign in with PwC Office 365'"
+              echo "3. Authenticate with @pwc.com credentials"
+              echo "4. Verify correct role-based access"
+            displayName: "Deployment Summary"

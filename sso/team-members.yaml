@@ -1,0 +1,114 @@
+# Team Members Configuration
+# This file manages SSO access for all team members across GKE and ECK clusters.
+#
+# Each member has:
+#   - name: Display name
+#   - gcp_email: @gcp.pwc.com email for GKE/GCP access
+#   - pwc_email: @pwc.com email for Azure AD / Kibana SSO
+#   - role: admin | editor | viewer (maps to K8s and ES roles)
+#
+# Roles:
+#   admin  - Full cluster admin, Kibana superuser
+#   editor - Deploy workloads, edit Kibana dashboards/indices
+#   viewer - Read-only access to namespaces and Kibana dashboards
+
+team:
+  - name: "Team Lead 1"
+    gcp_email: "teamlead1@gcp.pwc.com"
+    pwc_email: "teamlead1@pwc.com"
+    role: admin
+
+  - name: "Team Lead 2"
+    gcp_email: "teamlead2@gcp.pwc.com"
+    pwc_email: "teamlead2@pwc.com"
+    role: admin
+
+  - name: "Developer 1"
+    gcp_email: "developer1@gcp.pwc.com"
+    pwc_email: "developer1@pwc.com"
+    role: editor
+
+  - name: "Developer 2"
+    gcp_email: "developer2@gcp.pwc.com"
+    pwc_email: "developer2@pwc.com"
+    role: editor
+
+  - name: "Developer 3"
+    gcp_email: "developer3@gcp.pwc.com"
+    pwc_email: "developer3@pwc.com"
+    role: editor
+
+  - name: "Developer 4"
+    gcp_email: "developer4@gcp.pwc.com"
+    pwc_email: "developer4@pwc.com"
+    role: editor
+
+  - name: "Developer 5"
+    gcp_email: "developer5@gcp.pwc.com"
+    pwc_email: "developer5@pwc.com"
+    role: editor
+
+  - name: "Developer 6"
+    gcp_email: "developer6@gcp.pwc.com"
+    pwc_email: "developer6@pwc.com"
+    role: editor
+
+  - name: "Developer 7"
+    gcp_email: "developer7@gcp.pwc.com"
+    pwc_email: "developer7@pwc.com"
+    role: editor
+
+  - name: "Developer 8"
+    gcp_email: "developer8@gcp.pwc.com"
+    pwc_email: "developer8@pwc.com"
+    role: editor
+
+  - name: "Developer 9"
+    gcp_email: "developer9@gcp.pwc.com"
+    pwc_email: "developer9@pwc.com"
+    role: editor
+
+  - name: "Developer 10"
+    gcp_email: "developer10@gcp.pwc.com"
+    pwc_email: "developer10@pwc.com"
+    role: editor
+
+  - name: "DevOps 1"
+    gcp_email: "devops1@gcp.pwc.com"
+    pwc_email: "devops1@pwc.com"
+    role: admin
+
+  - name: "DevOps 2"
+    gcp_email: "devops2@gcp.pwc.com"
+    pwc_email: "devops2@pwc.com"
+    role: admin
+
+  - name: "QA 1"
+    gcp_email: "qa1@gcp.pwc.com"
+    pwc_email: "qa1@pwc.com"
+    role: viewer
+
+  - name: "QA 2"
+    gcp_email: "qa2@gcp.pwc.com"
+    pwc_email: "qa2@pwc.com"
+    role: viewer
+
+  - name: "QA 3"
+    gcp_email: "qa3@gcp.pwc.com"
+    pwc_email: "qa3@pwc.com"
+    role: viewer
+
+  - name: "Analyst 1"
+    gcp_email: "analyst1@gcp.pwc.com"
+    pwc_email: "analyst1@pwc.com"
+    role: viewer
+
+  - name: "Analyst 2"
+    gcp_email: "analyst2@gcp.pwc.com"
+    pwc_email: "analyst2@pwc.com"
+    role: viewer
+
+  - name: "Manager 1"
+    gcp_email: "manager1@gcp.pwc.com"
+    pwc_email: "manager1@pwc.com"
+    role: viewer

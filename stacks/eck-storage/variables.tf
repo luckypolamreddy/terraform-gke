@@ -9,8 +9,13 @@ variable "region" {
 }
 
 variable "cluster_name" {
-  description = "GKE cluster name (used as bucket prefix)"
+  description = "GKE cluster name (used as bucket prefix). Auto-sanitized: lowercased, special characters replaced with hyphens."
   type        = string
+
+  validation {
+    condition     = length(var.cluster_name) > 0 && length(var.cluster_name) <= 40
+    error_message = "Cluster name must be between 1 and 40 characters."
+  }
 }
 
 variable "service_account_email" {

@@ -1,6 +1,13 @@
 locals {
-  # Auto-lowercase cluster name (GKE rejects uppercase)
-  cluster_name = lower(var.cluster_name)
+  # Sanitize cluster name for GKE:
+  #   1. Lowercase everything
+  #   2. Replace special characters (underscores, dots, spaces, etc.) with hyphens
+  #   3. Collapse consecutive hyphens into one
+  #   4. Strip leading/trailing hyphens
+  _name_lower   = lower(var.cluster_name)
+  _name_hyphens = replace(local._name_lower, "/[^a-z0-9-]/", "-")
+  _name_clean   = replace(local._name_hyphens, "/-{2,}/", "-")
+  cluster_name  = replace(replace(local._name_clean, "/^-+/", ""), "/-+$/", "")
   subnet_name  = "${local.cluster_name}-subnet-01"
   is_default   = var.network_mode == "default"
 

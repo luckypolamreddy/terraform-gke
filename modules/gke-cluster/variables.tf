@@ -4,8 +4,13 @@ variable "project_id" {
 }
 
 variable "cluster_name" {
-  description = "Name of the GKE cluster"
+  description = "Name of the GKE cluster. Must be pre-sanitized: only lowercase letters, numbers, and hyphens."
   type        = string
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]*[a-z0-9]$", var.cluster_name)) && length(var.cluster_name) <= 40
+    error_message = "Cluster name must start with a lowercase letter, end with a letter or number, contain only lowercase letters, numbers, and hyphens, and be at most 40 characters."
+  }
 }
 
 variable "location" {

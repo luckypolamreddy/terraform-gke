@@ -1,6 +1,12 @@
 locals {
-  cluster_id       = "projects/${var.project_id}/locations/${var.location}/clusters/${var.cluster_name}"
-  backup_plan_name = "${var.cluster_name}-backup-01"
+  # Sanitize cluster name: lowercase, replace special chars with hyphens, collapse, trim
+  _name_lower   = lower(var.cluster_name)
+  _name_hyphens = replace(local._name_lower, "/[^a-z0-9-]/", "-")
+  _name_clean   = replace(local._name_hyphens, "/-{2,}/", "-")
+  cluster_name  = replace(replace(local._name_clean, "/^-+/", ""), "/-+$/", "")
+
+  cluster_id       = "projects/${var.project_id}/locations/${var.location}/clusters/${local.cluster_name}"
+  backup_plan_name = "${local.cluster_name}-backup-01"
 }
 
 module "gke_backup_plan" {

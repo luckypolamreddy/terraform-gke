@@ -48,12 +48,12 @@ variable "cluster_index" {
 
 # Cluster
 variable "cluster_name" {
-  description = "Name of the GKE cluster (auto-lowercased). Only lowercase letters, numbers, and hyphens allowed."
+  description = "Name of the GKE cluster. Auto-sanitized: lowercased, special characters (underscores, dots, etc.) replaced with hyphens, consecutive hyphens collapsed, trailing hyphens removed."
   type        = string
 
   validation {
-    condition     = can(regex("^[a-zA-Z][a-zA-Z0-9-]*$", var.cluster_name))
-    error_message = "Cluster name must start with a letter and contain only letters, numbers, and hyphens."
+    condition     = length(var.cluster_name) > 0 && length(var.cluster_name) <= 40
+    error_message = "Cluster name must be between 1 and 40 characters."
   }
 }
 

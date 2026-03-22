@@ -1,0 +1,149 @@
+# Pipeline: Import Existing GKE Cluster into Terraform
+# Discovers an existing cluster, generates tfvars, and imports into state.
+#
+# IMPORTANT: Run this ONCE per cluster. After import, use 02-cluster.yml
+# for all future changes.
+#
+# Workflow:
+#   1. First run with action=dry-run to review the generated tfvars
+#   2. Review the generated tfvars in the pipeline artifacts
+#   3. Run again with action=import to perform the actual import
+#   4. Verify plan shows zero diff
+
+trigger: none
+
+parameters:
+  - name: action
+    displayName: 'Action'
+    type: string
+    default: dry-run
+    values:
+      - dry-run
+      - import
+
+  - name: project
+    displayName: 'GCP Project'
+    type: string
+    default: pg-us-n-app-259723
+    values:
+      - pg-us-n-app-259723
+      - pg-us-e-app-012345
+
+  - name: clusterName
+    displayName: 'Existing GKE Cluster Name (exactly as it appears in GCP)'
+    type: string
+
+  - name: networkMode
+    displayName: 'Network Mode'
+    type: string
+    default: default
+    values:
+      - default
+      - custom
+
+  - name: clusterIndex
+    displayName: 'Cluster Index (only for custom network mode, 1-250)'
+    type: number
+    default: 1
+
+variables:
+  - group: gcp-credentials-${{ parameters.project }}
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  # Stage 0: Validate cluster name
+  - stage: Validate
+    displayName: 'Validate Inputs'
+    jobs:
+      - job: ValidateClusterName
+        displayName: 'Validate Cluster Name'
+        steps:
+          - template: templates/validate-cluster-name.yml
+            parameters:
+              clusterName: ${{ parameters.clusterName }}
+
+  # Stage 1: Discover and Import
+  - stage: Import
+    displayName: 'Import Cluster (${{ parameters.action }})'
+    dependsOn: Validate
+    jobs:
+      - job: ImportCluster
+        displayName: 'Discover & Import'
+        timeoutInMinutes: 30
+        steps:
+          - checkout: self
+
+          - task: Bash@3
+            displayName: 'Install tools'
+            inputs:
+              targetType: inline
+              script: |
+                set -euo pipefail
+
+                # Install gke-gcloud-auth-plugin
+                sudo apt-get update
+                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl jq
+
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+                sudo apt-get update
+                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+                # Install Terraform
+                wget -qO- https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip | funzip > /tmp/terraform
+                chmod +x /tmp/terraform
+                sudo mv /tmp/terraform /usr/local/bin/terraform
+
+                echo "gcloud version:"
+                gcloud version --format=json | jq '.["Google Cloud SDK"]'
+                echo "terraform version:"
+                terraform version
+
+          - task: Bash@3
+            displayName: 'Authenticate to GCP'
+            inputs:
+              targetType: inline
+              script: |
+                echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+                gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+                gcloud config set project ${{ parameters.project }}
+            env:
+              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+          - task: Bash@3
+            displayName: 'Run Import Script (${{ parameters.action }})'
+            inputs:
+              targetType: inline
+              script: |
+                set -euo pipefail
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                export GOOGLE_APPLICATION_CREDENTIALS="$(Agent.TempDirectory)/gcp-key.json"
+
+                IMPORT_ARGS="--project ${{ parameters.project }} \
+                  --cluster ${{ parameters.clusterName }} \
+                  --region us-east1 \
+                  --state-bucket $(TF_STATE_BUCKET) \
+                  --network-mode ${{ parameters.networkMode }} \
+                  --cluster-index ${{ parameters.clusterIndex }} \
+                  --output-dir $(Build.ArtifactStagingDirectory)"
+
+                if [ "${{ parameters.action }}" = "dry-run" ]; then
+                  IMPORT_ARGS="$IMPORT_ARGS --dry-run"
+                fi
+
+                chmod +x scripts/import-gke-cluster.sh
+                ./scripts/import-gke-cluster.sh $IMPORT_ARGS
+            env:
+              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+          # Publish generated tfvars as a pipeline artifact
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Generated tfvars'
+            inputs:
+              pathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: 'imported-cluster-config'
+              publishLocation: 'Container'
+            condition: always()

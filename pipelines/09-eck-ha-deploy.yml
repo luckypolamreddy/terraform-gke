@@ -122,8 +122,20 @@ pool:
   vmImage: 'ubuntu-latest'
 
 stages:
+  # Stage 0: Validate inputs before any deployment
+  - stage: Validate
+    displayName: 'Validate Inputs'
+    jobs:
+      - job: ValidateClusterName
+        displayName: 'Validate Cluster Name'
+        steps:
+          - template: templates/validate-cluster-name.yml
+            parameters:
+              clusterName: ${{ parameters.clusterName }}
+
   - stage: ECK_HA_Deploy
     displayName: 'Deploy ECK HA Stack'
+    dependsOn: Validate
     jobs:
       - job: DeployECK
         displayName: 'ECK HA Deployment'

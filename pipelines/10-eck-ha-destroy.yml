@@ -36,9 +36,21 @@ pool:
   vmImage: 'ubuntu-latest'
 
 stages:
+  # Stage 0: Validate inputs before any destruction
+  - stage: Validate
+    displayName: 'Validate Inputs'
+    jobs:
+      - job: ValidateClusterName
+        displayName: 'Validate Cluster Name'
+        steps:
+          - template: templates/validate-cluster-name.yml
+            parameters:
+              clusterName: ${{ parameters.clusterName }}
+
   # Stage 1: Remove monitoring (if exists)
   - stage: RemoveMonitoring
     displayName: 'Remove Monitoring'
+    dependsOn: Validate
     jobs:
       - job: CleanMonitoring
         displayName: 'Remove Monitoring Resources'

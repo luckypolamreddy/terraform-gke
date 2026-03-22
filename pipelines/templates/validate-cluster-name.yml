@@ -1,0 +1,87 @@
+# Template: Validate Cluster Name
+# Validates that the cluster name parameter contains only allowed characters.
+# Fails the pipeline immediately with a clear error message if invalid.
+#
+# Usage:
+#   - template: templates/validate-cluster-name.yml
+#     parameters:
+#       clusterName: ${{ parameters.clusterName }}
+
+parameters:
+  - name: clusterName
+    type: string
+
+steps:
+  - task: Bash@3
+    displayName: 'Validate Cluster Name'
+    inputs:
+      targetType: inline
+      script: |
+        CLUSTER_NAME="${{ parameters.clusterName }}"
+
+        echo "============================================"
+        echo "  Cluster Name Validation"
+        echo "============================================"
+        echo ""
+        echo "Input: '$CLUSTER_NAME'"
+        echo ""
+
+        # Check if empty
+        if [ -z "$CLUSTER_NAME" ]; then
+          echo "##vso[task.logissue type=error]Cluster name cannot be empty."
+          echo "##vso[task.complete result=Failed;]"
+          exit 1
+        fi
+
+        # Check length (max 40 characters)
+        if [ ${#CLUSTER_NAME} -gt 40 ]; then
+          echo "##vso[task.logissue type=error]Cluster name is too long (${#CLUSTER_NAME} chars). Maximum is 40 characters."
+          echo "##vso[task.complete result=Failed;]"
+          exit 1
+        fi
+
+        # Check for invalid characters — only lowercase letters, numbers, and hyphens allowed
+        if echo "$CLUSTER_NAME" | grep -qP '[^a-z0-9-]'; then
+          INVALID_CHARS=$(echo "$CLUSTER_NAME" | grep -oP '[^a-z0-9-]' | sort -u | tr '\n' ' ')
+          echo "##vso[task.logissue type=error]Cluster name contains invalid characters: [ $INVALID_CHARS]"
+          echo ""
+          echo "  INVALID:  '$CLUSTER_NAME'"
+          echo ""
+          echo "  Rules:"
+          echo "    - Only lowercase letters (a-z), numbers (0-9), and hyphens (-) are allowed"
+          echo "    - Must start with a letter"
+          echo "    - Must end with a letter or number"
+          echo "    - No uppercase letters, underscores, dots, spaces, or special characters"
+          echo ""
+          echo "  Examples:"
+          echo "    VALID:   eck-ha-nonprod, my-cluster-01, production-east"
+          echo "    INVALID: My_Cluster, eck.ha.prod, cluster name, AJIHIA&^%&_*&nhhf"
+          echo ""
+          echo "##vso[task.complete result=Failed;]"
+          exit 1
+        fi
+
+        # Must start with a letter
+        if ! echo "$CLUSTER_NAME" | grep -qP '^[a-z]'; then
+          echo "##vso[task.logissue type=error]Cluster name must start with a lowercase letter. Got: '${CLUSTER_NAME:0:1}'"
+          echo "##vso[task.complete result=Failed;]"
+          exit 1
+        fi
+
+        # Must end with a letter or number (not a hyphen)
+        if echo "$CLUSTER_NAME" | grep -qP '[-]$'; then
+          echo "##vso[task.logissue type=error]Cluster name must not end with a hyphen."
+          echo "##vso[task.complete result=Failed;]"
+          exit 1
+        fi
+
+        # No consecutive hyphens
+        if echo "$CLUSTER_NAME" | grep -qP '--'; then
+          echo "##vso[task.logissue type=error]Cluster name must not contain consecutive hyphens (--)."
+          echo "##vso[task.complete result=Failed;]"
+          exit 1
+        fi
+
+        echo "  VALID: '$CLUSTER_NAME'"
+        echo ""
+        echo "============================================"

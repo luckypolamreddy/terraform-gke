@@ -41,9 +41,21 @@ pool:
   vmImage: 'ubuntu-latest'
 
 stages:
+  # Stage 0: Validate inputs before any infrastructure changes
+  - stage: Validate
+    displayName: 'Validate Inputs'
+    jobs:
+      - job: ValidateClusterName
+        displayName: 'Validate Cluster Name'
+        steps:
+          - template: templates/validate-cluster-name.yml
+            parameters:
+              clusterName: ${{ parameters.clusterName }}
+
   # Stage 1: Plan (always runs - dry run)
   - stage: Plan
     displayName: 'Terraform Plan (dry run)'
+    dependsOn: Validate
     jobs:
       - deployment: TerraformPlan
         displayName: 'Terraform Plan'

@@ -1,0 +1,499 @@
+parameters:
+  - name: clusterName
+    type: string
+
+steps:
+  - task: Bash@3
+    displayName: 'Install gke-gcloud-auth-plugin'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+
+        # Add Google Cloud SDK apt source
+        sudo apt-get update
+        sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+        curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+        echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+          sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+
+        sudo apt-get update
+        sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+        # Find the installed plugin binary
+        PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
+        echo "Plugin binary found at: $PLUGIN_BIN"
+
+        # Create a symlink in /usr/local/bin so it's always on PATH for all subsequent steps
+        if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
+          sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
+          sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
+          echo "Symlinked to /usr/local/bin/gke-gcloud-auth-plugin"
+        else
+          echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
+          exit 1
+        fi
+
+        # Verify
+        echo "=== Verification ==="
+        which gke-gcloud-auth-plugin
+        gke-gcloud-auth-plugin --version
+
+  - task: Bash@3
+    displayName: 'Authenticate to GKE'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+        echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
+
+        echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+        gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+        gcloud container clusters get-credentials ${{ parameters.clusterName }} \
+          --region $(CLUSTER_LOCATION) \
+          --project $(GCP_PROJECT_ID)
+    env:
+      USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+  - task: Bash@3
+    displayName: 'Replace Tokens in HA Manifest Files'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+
+        echo "Replacing template tokens in HA manifests..."
+
+        sed -i \
+          -e 's/_NAMESPACE_/$(eckNamespace)/g' \
+          -e 's/_ES_NAME_/$(elasticsearchName)/g' \
+          -e 's/_ES_OPERATOR_VERSION_/$(elasticsearchOperatorVersion)/g' \
+          -e 's/_MASTER_COUNT_/$(masterCount)/g' \
+          -e 's/_MASTER_HEAP_/$(masterHeap)/g' \
+          -e 's/_MASTER_MEMORY_LIMIT_/$(masterMemoryLimit)/g' \
+          -e 's/_MASTER_MEMORY_/$(masterMemory)/g' \
+          -e 's/_MASTER_CPU_LIMIT_/$(masterCpuLimit)/g' \
+          -e 's/_MASTER_CPU_/$(masterCpu)/g' \
+          -e 's/_MASTER_STORAGE_/$(masterStorage)/g' \
+          -e 's/_HOT_COUNT_/$(hotCount)/g' \
+          -e 's/_HOT_HEAP_/$(hotHeap)/g' \
+          -e 's/_HOT_MEMORY_LIMIT_/$(hotMemoryLimit)/g' \
+          -e 's/_HOT_MEMORY_/$(hotMemory)/g' \
+          -e 's/_HOT_CPU_LIMIT_/$(hotCpuLimit)/g' \
+          -e 's/_HOT_CPU_/$(hotCpu)/g' \
+          -e 's/_HOT_STORAGE_/$(hotStorage)/g' \
+          -e 's/_COLD_COUNT_/$(coldCount)/g' \
+          -e 's/_COLD_HEAP_/$(coldHeap)/g' \
+          -e 's/_COLD_MEMORY_LIMIT_/$(coldMemoryLimit)/g' \
+          -e 's/_COLD_MEMORY_/$(coldMemory)/g' \
+          -e 's/_COLD_CPU_LIMIT_/$(coldCpuLimit)/g' \
+          -e 's/_COLD_CPU_/$(coldCpu)/g' \
+          -e 's/_COLD_STORAGE_/$(coldStorage)/g' \
+          -e 's/_KIBANA_NAME_/$(kibanaName)/g' \
+          -e 's/_KIBANA_NODES_/$(kibanaNoOfNodes)/g' \
+          -e 's/_KIBANA_MEMORY_LIMIT_/$(kibanaMemoryLimit)/g' \
+          -e 's/_KIBANA_MEMORY_/$(kibanaMemory)/g' \
+          -e 's/_KIBANA_CPU_LIMIT_/$(kibanaCpuLimit)/g' \
+          -e 's/_KIBANA_CPU_/$(kibanaCpu)/g' \
+          $(workingDirectory)/03-elasticsearch.yaml \
+          $(workingDirectory)/04-kibana.yaml
+
+        echo "Token replacement complete."
+        echo "=== Elasticsearch manifest (first 20 lines) ==="
+        head -20 $(workingDirectory)/03-elasticsearch.yaml
+
+  - task: Bash@3
+    displayName: 'Install ECK Operator'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        echo "Installing ECK CRDs..."
+        kubectl create -f https://download.elastic.co/downloads/eck/$(ECK_OPERATOR_VERSION)/crds.yaml || true
+
+        echo "Installing ECK Operator..."
+        kubectl apply -f https://download.elastic.co/downloads/eck/$(ECK_OPERATOR_VERSION)/operator.yaml
+
+        echo "Waiting for ECK operator to be ready..."
+        kubectl -n elastic-system wait --for=condition=Ready pod -l control-plane=elastic-operator --timeout=120s
+
+        echo "ECK operator is ready."
+
+  - task: Bash@3
+    displayName: 'Create Namespace'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+        kubectl apply -f $(workingDirectory)/00-namespace.yaml
+
+  - task: Bash@3
+    displayName: 'Apply Trial License'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+        kubectl apply -f $(workingDirectory)/01-enterprise-license.yaml
+
+  - task: Bash@3
+    displayName: 'Create GCS Credentials Secret'
+    inputs:
+      targetType: inline
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+        echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcs-key.json
+        kubectl create secret generic gcs-credentials \
+          --from-file=gcs.client.default.credentials_file=$(Agent.TempDirectory)/gcs-key.json \
+          -n elastic-stack --dry-run=client -o yaml | kubectl apply -f -
+
+  - task: Bash@3
+    displayName: 'Apply GCS Credentials Manifest'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+        kubectl apply -f $(workingDirectory)/02-gcs-credentials.yaml
+
+  - task: Bash@3
+    displayName: 'Deploy Elasticsearch (HA)'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+        kubectl apply -f $(workingDirectory)/03-elasticsearch.yaml -n elastic-stack
+
+  - task: Bash@3
+    displayName: 'Wait for Elasticsearch Master Nodes'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        echo "Waiting for master pods to be created..."
+        for i in $(seq 1 60); do
+          COUNT=$(kubectl get pods -n elastic-stack -l elasticsearch.k8s.elastic.co/cluster-name=$(elasticsearchName),elastic-role=master --no-headers 2>/dev/null | wc -l)
+          echo "Attempt $i: Found $COUNT master pods"
+          if [ "$COUNT" -gt "0" ]; then
+            echo "Master pods exist, waiting for Ready..."
+            break
+          fi
+          sleep 10
+        done
+
+        kubectl wait pod --for=condition=Ready \
+          -l elasticsearch.k8s.elastic.co/cluster-name=$(elasticsearchName),elastic-role=master \
+          -n elastic-stack --timeout=600s
+        echo "Master nodes are ready."
+
+  - task: Bash@3
+    displayName: 'Wait for Hot Data Nodes'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        echo "Waiting for hot data pods to be created..."
+        for i in $(seq 1 60); do
+          COUNT=$(kubectl get pods -n elastic-stack -l elasticsearch.k8s.elastic.co/cluster-name=$(elasticsearchName),elastic-role=hot --no-headers 2>/dev/null | wc -l)
+          echo "Attempt $i: Found $COUNT hot pods"
+          if [ "$COUNT" -gt "0" ]; then
+            echo "Hot pods exist, waiting for Ready..."
+            break
+          fi
+          sleep 10
+        done
+
+        kubectl wait pod --for=condition=Ready \
+          -l elasticsearch.k8s.elastic.co/cluster-name=$(elasticsearchName),elastic-role=hot \
+          -n elastic-stack --timeout=600s
+        echo "Hot data nodes are ready."
+
+  - task: Bash@3
+    displayName: 'Wait for Cold Data Nodes'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        echo "Waiting for cold data pods to be created..."
+        for i in $(seq 1 60); do
+          COUNT=$(kubectl get pods -n elastic-stack -l elasticsearch.k8s.elastic.co/cluster-name=$(elasticsearchName),elastic-role=cold --no-headers 2>/dev/null | wc -l)
+          echo "Attempt $i: Found $COUNT cold pods"
+          if [ "$COUNT" -gt "0" ]; then
+            echo "Cold pods exist, waiting for Ready..."
+            break
+          fi
+          sleep 10
+        done
+
+        kubectl wait pod --for=condition=Ready \
+          -l elasticsearch.k8s.elastic.co/cluster-name=$(elasticsearchName),elastic-role=cold \
+          -n elastic-stack --timeout=600s
+        echo "Cold data nodes are ready."
+
+  - task: Bash@3
+    displayName: 'Wait for Elasticsearch Cluster Health'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        echo "Waiting for Elasticsearch cluster health..."
+        for i in $(seq 1 30); do
+          HEALTH=$(kubectl get elasticsearch -n elastic-stack -o jsonpath='{.items[0].status.health}' 2>/dev/null || echo "unknown")
+          PHASE=$(kubectl get elasticsearch -n elastic-stack -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "unknown")
+          echo "Attempt $i: health=$HEALTH phase=$PHASE"
+          if [ "$HEALTH" = "green" ] || [ "$HEALTH" = "yellow" ]; then
+            echo "Elasticsearch cluster is healthy!"
+            break
+          fi
+          sleep 20
+        done
+
+  - task: Bash@3
+    displayName: 'Deploy Kibana'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+        kubectl apply -f $(workingDirectory)/04-kibana.yaml -n elastic-stack
+
+  - task: Bash@3
+    displayName: 'Wait for Kibana'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        echo "Waiting for Kibana pods to be created..."
+        for i in $(seq 1 60); do
+          COUNT=$(kubectl get pods -n elastic-stack -l common.k8s.elastic.co/type=kibana --no-headers 2>/dev/null | wc -l)
+          echo "Attempt $i: Found $COUNT Kibana pods"
+          if [ "$COUNT" -gt "0" ]; then
+            echo "Kibana pods exist, waiting for Ready..."
+            break
+          fi
+          sleep 10
+        done
+
+        kubectl wait pod --for=condition=Ready \
+          --selector=common.k8s.elastic.co/type=kibana \
+          -n elastic-stack --timeout=600s
+
+        for i in $(seq 1 30); do
+          HEALTH=$(kubectl get kibana -n elastic-stack -o jsonpath='{.items[0].status.health}' 2>/dev/null || echo "unknown")
+          echo "Attempt $i: Kibana health = $HEALTH"
+          if [ "$HEALTH" = "green" ]; then
+            echo "Kibana is ready!"
+            break
+          fi
+          sleep 20
+        done
+
+  - task: Bash@3
+    displayName: 'Register Hot Snapshot Repository'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        # Wait for ES to be ready
+        kubectl wait --for=condition=Ready pod \
+          -l common.k8s.elastic.co/type=elasticsearch \
+          -n elastic-stack --timeout=300s
+
+        # Get elastic password
+        ES_PASSWORD=$(kubectl get secret elasticsearch-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
+
+        echo "Registering hot snapshot repository..."
+        kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl -s -k -u "elastic:${ES_PASSWORD}" \
+          -X PUT "https://elasticsearch-es-http.elastic-stack.svc:9200/_snapshot/hot-snapshot-repo" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "type": "gcs",
+            "settings": {
+              "bucket": "$(HOT_BUCKET_NAME)",
+              "base_path": "hot-snapshots",
+              "client": "default"
+            }
+          }'
+        echo ""
+        echo "Hot snapshot repository registered."
+
+  - task: Bash@3
+    displayName: 'Register Cold Snapshot Repository'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        ES_PASSWORD=$(kubectl get secret elasticsearch-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
+
+        echo "Registering cold snapshot repository..."
+        kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl -s -k -u "elastic:${ES_PASSWORD}" \
+          -X PUT "https://elasticsearch-es-http.elastic-stack.svc:9200/_snapshot/cold-snapshot-repo" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "type": "gcs",
+            "settings": {
+              "bucket": "$(COLD_BUCKET_NAME)",
+              "base_path": "cold-snapshots",
+              "client": "default"
+            }
+          }'
+        echo ""
+        echo "Cold snapshot repository registered."
+
+  - task: Bash@3
+    displayName: 'Create Hot SLM Policy'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        ES_PASSWORD=$(kubectl get secret elasticsearch-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
+
+        echo "Creating hot tier SLM policy..."
+        # Schedule: 2 AM UTC daily (10 PM EST)
+        kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl -s -k -u "elastic:${ES_PASSWORD}" \
+          -X PUT "https://elasticsearch-es-http.elastic-stack.svc:9200/_slm/policy/hot-daily-snapshots" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "schedule": "0 0 2 * * ?",
+            "name": "<hot-snapshot-{now/d}>",
+            "repository": "hot-snapshot-repo",
+            "config": {
+              "indices": ["*"],
+              "include_global_state": true,
+              "ignore_unavailable": false
+            },
+            "retention": {
+              "expire_after": "30d",
+              "min_count": 5,
+              "max_count": 30
+            }
+          }'
+        echo ""
+        echo "Hot SLM policy created."
+
+        # Trigger immediate snapshot to validate
+        echo "Triggering immediate hot snapshot..."
+        kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl -s -k -u "elastic:${ES_PASSWORD}" \
+          -X POST "https://elasticsearch-es-http.elastic-stack.svc:9200/_slm/policy/hot-daily-snapshots/_execute" \
+          -H "Content-Type: application/json"
+        echo ""
+
+  - task: Bash@3
+    displayName: 'Create Cold SLM Policy'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        ES_PASSWORD=$(kubectl get secret elasticsearch-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
+
+        echo "Creating cold tier SLM policy..."
+        # Schedule: 4 AM UTC daily (midnight EST)
+        kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl -s -k -u "elastic:${ES_PASSWORD}" \
+          -X PUT "https://elasticsearch-es-http.elastic-stack.svc:9200/_slm/policy/cold-daily-snapshots" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "schedule": "0 0 4 * * ?",
+            "name": "<cold-snapshot-{now/d}>",
+            "repository": "cold-snapshot-repo",
+            "config": {
+              "indices": ["*"],
+              "include_global_state": false,
+              "ignore_unavailable": true
+            },
+            "retention": {
+              "expire_after": "90d",
+              "min_count": 5,
+              "max_count": 90
+            }
+          }'
+        echo ""
+        echo "Cold SLM policy created."
+
+        # Trigger immediate snapshot to validate
+        echo "Triggering immediate cold snapshot..."
+        kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl -s -k -u "elastic:${ES_PASSWORD}" \
+          -X POST "https://elasticsearch-es-http.elastic-stack.svc:9200/_slm/policy/cold-daily-snapshots/_execute" \
+          -H "Content-Type: application/json"
+        echo ""
+
+  - task: Bash@3
+    displayName: 'Show ECK HA Status'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        echo "=========== ECK HA Deployment Summary ==========="
+        echo ""
+        echo "--- Elasticsearch ---"
+        kubectl get elasticsearch -n elastic-stack
+        echo ""
+        echo "--- Kibana ---"
+        kubectl get kibana -n elastic-stack
+        echo ""
+        echo "--- Pods by Role ---"
+        echo "Masters:"
+        kubectl get pods -n elastic-stack -l elastic-role=master -o wide
+        echo ""
+        echo "Hot Data Nodes:"
+        kubectl get pods -n elastic-stack -l elastic-role=hot -o wide
+        echo ""
+        echo "Cold Data Nodes:"
+        kubectl get pods -n elastic-stack -l elastic-role=cold -o wide
+        echo ""
+        echo "Kibana:"
+        kubectl get pods -n elastic-stack -l elastic-role=kibana -o wide
+        echo ""
+        echo "--- Services ---"
+        kubectl get svc -n elastic-stack
+        echo ""
+        echo "--- Node Pool Distribution ---"
+        kubectl get pods -n elastic-stack -o custom-columns='NAME:.metadata.name,NODE:.spec.nodeName,STATUS:.status.phase' --sort-by=.spec.nodeName
+        echo ""
+        echo "--- Snapshot Repositories ---"
+        ES_PASSWORD=$(kubectl get secret elasticsearch-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
+        kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl -s -k -u "elastic:${ES_PASSWORD}" \
+          "https://elasticsearch-es-http.elastic-stack.svc:9200/_snapshot/_all" 2>/dev/null | head -5
+        echo ""
+        echo ""
+        echo "To get the elastic user password, run:"
+        echo "kubectl get secret elasticsearch-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d"

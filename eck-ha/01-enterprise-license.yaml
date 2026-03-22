@@ -1,0 +1,13 @@
+# ECK Trial License
+# Enables all Platinum/Enterprise features for 30 days
+# Must accept EULA via annotation
+apiVersion: v1
+kind: Secret
+metadata:
+  name: eck-trial-license
+  namespace: elastic-system
+  labels:
+    license.k8s.elastic.co/scope: operator
+  annotations:
+    elastic.co/eula: accepted
+type: Opaque

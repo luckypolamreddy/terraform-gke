@@ -1,0 +1,281 @@
+# Pipeline: ECK HA Destroy
+# Removes ECK HA stack and operator in correct order
+
+trigger: none
+
+parameters:
+  - name: project
+    displayName: 'GCP Project'
+    type: string
+    default: pg-us-n-app-259723
+    values:
+      - pg-us-n-app-259723
+      - pg-us-e-app-012345
+
+  - name: clusterName
+    displayName: 'GKE Cluster Name'
+    type: string
+
+  - name: removeOperator
+    displayName: 'Also remove ECK operator?'
+    type: boolean
+    default: true
+
+variables:
+  - group: gcp-credentials-${{ parameters.project }}
+  - name: ES_CLUSTER_NAME
+    value: elasticsearch
+  - name: KIBANA_NAME
+    value: kibana
+  - name: ECK_OPERATOR_VERSION
+    value: '9.3.1'
+  - name: CLUSTER_LOCATION
+    value: us-east1
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  # Stage 1: Remove monitoring (if exists)
+  - stage: RemoveMonitoring
+    displayName: 'Remove Monitoring'
+    jobs:
+      - job: CleanMonitoring
+        displayName: 'Remove Monitoring Resources'
+        steps:
+          - checkout: self
+
+          - task: Bash@3
+            displayName: 'Install gke-gcloud-auth-plugin'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
+                set -euo pipefail
+
+                sudo apt-get update
+                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+
+                sudo apt-get update
+                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
+                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
+                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
+                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
+                else
+                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
+                  exit 1
+                fi
+
+          - task: Bash@3
+            displayName: 'Authenticate to GKE'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
+
+                echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+                gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+                gcloud container clusters get-credentials ${{ parameters.clusterName }} \
+                  --region $(CLUSTER_LOCATION) \
+                  --project $(GCP_PROJECT_ID)
+            env:
+              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+          - task: Bash@3
+            displayName: 'Delete Beats'
+            continueOnError: true
+            inputs:
+              targetType: inline
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl delete beat --all -n elastic-stack || true
+
+          - task: Bash@3
+            displayName: 'Delete Monitoring Resources'
+            continueOnError: true
+            inputs:
+              targetType: inline
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl delete kibana,elasticsearch -l app.kubernetes.io/part-of=monitoring -n elastic-stack || true
+
+  # Stage 2: Remove Elastic Stack
+  - stage: RemoveStack
+    displayName: 'Remove Elastic Stack'
+    dependsOn: RemoveMonitoring
+    jobs:
+      - job: CleanStack
+        displayName: 'Remove ES & Kibana'
+        steps:
+          - task: Bash@3
+            displayName: 'Install gke-gcloud-auth-plugin'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
+                set -euo pipefail
+
+                sudo apt-get update
+                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+
+                sudo apt-get update
+                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
+                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
+                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
+                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
+                else
+                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
+                  exit 1
+                fi
+
+          - task: Bash@3
+            displayName: 'Authenticate to GKE'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
+
+                echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+                gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+                gcloud container clusters get-credentials ${{ parameters.clusterName }} \
+                  --region $(CLUSTER_LOCATION) \
+                  --project $(GCP_PROJECT_ID)
+            env:
+              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+          - task: Bash@3
+            displayName: 'Delete Kibana'
+            continueOnError: true
+            inputs:
+              targetType: inline
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl delete kibana $(KIBANA_NAME) -n elastic-stack || true
+
+          - task: Bash@3
+            displayName: 'Wait for Kibana deletion'
+            inputs:
+              targetType: inline
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl -n elastic-stack wait --for=delete kibana/$(KIBANA_NAME) --timeout=120s 2>/dev/null || true
+
+          - task: Bash@3
+            displayName: 'Delete Elasticsearch'
+            continueOnError: true
+            inputs:
+              targetType: inline
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl delete elasticsearch $(ES_CLUSTER_NAME) -n elastic-stack || true
+
+          - task: Bash@3
+            displayName: 'Wait for ES deletion'
+            inputs:
+              targetType: inline
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl -n elastic-stack wait --for=delete elasticsearch/$(ES_CLUSTER_NAME) --timeout=300s 2>/dev/null || true
+
+          - task: Bash@3
+            displayName: 'Delete Secrets & ConfigMaps'
+            continueOnError: true
+            inputs:
+              targetType: inline
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl delete secret gcs-credentials -n elastic-stack || true
+
+  # Stage 3: Remove Operator (optional)
+  - stage: RemoveOperator
+    displayName: 'Remove ECK Operator'
+    dependsOn: RemoveStack
+    condition: eq('${{ parameters.removeOperator }}', true)
+    jobs:
+      - job: CleanOperator
+        displayName: 'Remove ECK Operator'
+        steps:
+          - task: Bash@3
+            displayName: 'Install gke-gcloud-auth-plugin'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
+                set -euo pipefail
+
+                sudo apt-get update
+                sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+                echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+                  sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+
+                sudo apt-get update
+                sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+                PLUGIN_BIN=$(find /usr -name 'gke-gcloud-auth-plugin' -type f 2>/dev/null | head -1)
+                if [ -n "$PLUGIN_BIN" ] && [ -f "$PLUGIN_BIN" ]; then
+                  sudo ln -sf "$PLUGIN_BIN" /usr/local/bin/gke-gcloud-auth-plugin
+                  sudo chmod +x /usr/local/bin/gke-gcloud-auth-plugin
+                else
+                  echo "ERROR: gke-gcloud-auth-plugin binary not found after install!"
+                  exit 1
+                fi
+
+          - task: Bash@3
+            displayName: 'Authenticate to GKE'
+            enabled: true
+            inputs:
+              targetType: 'inline'
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                echo "##vso[task.setvariable variable=USE_GKE_GCLOUD_AUTH_PLUGIN]True"
+
+                echo '$(GCP_SA_KEY)' > $(Agent.TempDirectory)/gcp-key.json
+                gcloud auth activate-service-account --key-file=$(Agent.TempDirectory)/gcp-key.json
+                gcloud container clusters get-credentials ${{ parameters.clusterName }} \
+                  --region $(CLUSTER_LOCATION) \
+                  --project $(GCP_PROJECT_ID)
+            env:
+              USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+          - task: Bash@3
+            displayName: 'Delete ECK Operator'
+            inputs:
+              targetType: inline
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl delete -f https://download.elastic.co/downloads/eck/$(ECK_OPERATOR_VERSION)/operator.yaml || true
+
+          - task: Bash@3
+            displayName: 'Delete ECK CRDs'
+            inputs:
+              targetType: inline
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl delete -f https://download.elastic.co/downloads/eck/$(ECK_OPERATOR_VERSION)/crds.yaml || true
+
+          - task: Bash@3
+            displayName: 'Delete Namespaces'
+            continueOnError: true
+            inputs:
+              targetType: inline
+              script: |
+                export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+                kubectl delete namespace elastic-system elastic-stack || true

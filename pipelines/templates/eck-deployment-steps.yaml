@@ -269,23 +269,96 @@ steps:
     inputs:
       targetType: 'inline'
       script: |
+        set -euo pipefail
+
+        ES_URL="https://elasticsearch-es-http.elastic-stack.svc:9200"
+        CURL_OPTS="-s -k"
+
         # Wait for Elasticsearch to be ready first
         kubectl wait --for=condition=Ready pod -l common.k8s.elastic.co/type=elasticsearch -n elastic-stack --timeout=300s
+
         # Get the elastic user password from the secret
         ES_PASSWORD=$(kubectl get secret elasticsearch-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
-        # Execute the snapshot repository registration via kubectl exec
-        kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
-          curl -s -k -u "elastic:${ES_PASSWORD}" \
-          -X PUT "https://elasticsearch-es-http.elastic-stack.svc:9200/_snapshot/my_gcs_repository" \
+
+        # Step 1: Reload secure settings so ES picks up the GCS credentials
+        # This is REQUIRED after the gcs-credentials secret is mounted.
+        # Without this, the GCS client has no credentials and repo creation fails.
+        echo "=== Reloading secure settings (GCS credentials) ==="
+        RELOAD_RESPONSE=$(kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl $CURL_OPTS -u "elastic:${ES_PASSWORD}" \
+          -X POST "${ES_URL}/_nodes/reload_secure_settings" \
           -H "Content-Type: application/json" \
-          -d '{
-            "type": "gcs",
-            "settings": {
-              "bucket": "$(GCS_BUCKET_NAME)",
-              "client": "default"
-            }
-          }'
-        echo "Snapshot repository registered!"
+          -d '{}')
+        echo "$RELOAD_RESPONSE"
+
+        # Wait for the reload to propagate to all nodes
+        echo "Waiting 15s for settings to propagate to all nodes..."
+        sleep 15
+
+        # Step 2: Verify GCS client is loaded
+        echo ""
+        echo "=== Verifying GCS client is available ==="
+        kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl $CURL_OPTS -u "elastic:${ES_PASSWORD}" \
+          "${ES_URL}/_cluster/settings?include_defaults=true&flat_settings=true" \
+          | grep -o '"gcs[^"]*"' | head -5 || echo "GCS settings found (or defaults used)"
+
+        # Step 3: Register the snapshot repository with retry
+        echo ""
+        echo "=== Registering GCS snapshot repository ==="
+        MAX_RETRIES=5
+        RETRY_DELAY=10
+
+        for i in $(seq 1 $MAX_RETRIES); do
+          echo "Attempt $i/$MAX_RETRIES: Creating snapshot repository 'my_gcs_repository'..."
+
+          RESPONSE=$(kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+            curl $CURL_OPTS -w "\n%{http_code}" -u "elastic:${ES_PASSWORD}" \
+            -X PUT "${ES_URL}/_snapshot/my_gcs_repository" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "gcs",
+              "settings": {
+                "bucket": "$(GCS_BUCKET_NAME)",
+                "client": "default"
+              }
+            }')
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "Response ($HTTP_CODE): $BODY"
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "Snapshot repository registered successfully!"
+            break
+          fi
+
+          if [ "$i" -eq "$MAX_RETRIES" ]; then
+            echo "##vso[task.logissue type=error]Failed to register snapshot repository after $MAX_RETRIES attempts."
+            echo "##vso[task.logissue type=error]Last response: $BODY"
+            exit 1
+          fi
+
+          echo "Retrying in ${RETRY_DELAY}s..."
+          sleep $RETRY_DELAY
+        done
+
+        # Step 4: Verify the repository works
+        echo ""
+        echo "=== Verifying snapshot repository ==="
+        VERIFY_RESPONSE=$(kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl $CURL_OPTS -w "\n%{http_code}" -u "elastic:${ES_PASSWORD}" \
+          -X POST "${ES_URL}/_snapshot/my_gcs_repository/_verify")
+
+        VERIFY_CODE=$(echo "$VERIFY_RESPONSE" | tail -1)
+        VERIFY_BODY=$(echo "$VERIFY_RESPONSE" | head -n -1)
+        echo "Verify ($VERIFY_CODE): $VERIFY_BODY"
+
+        if [ "$VERIFY_CODE" != "200" ]; then
+          echo "##vso[task.logissue type=warning]Repository verification returned $VERIFY_CODE. Check GCS bucket permissions."
+        else
+          echo "Repository verification passed!"
+        fi
 
   - task: Bash@3
     displayName: 'Create Snapshot Lifecycle Policy'
@@ -295,18 +368,35 @@ steps:
       script: |
         set -euo pipefail
 
+        ES_URL="https://elasticsearch-es-http.elastic-stack.svc:9200"
+        CURL_OPTS="-s -k"
+
         # Get the elastic user password
         ES_PASSWORD=$(kubectl get secret elasticsearch-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
 
-        # Wait for Elasticsearch to be ready before creating policy
-        kubectl wait --for=condition=Ready pod -l common.k8s.elastic.co/type=elasticsearch -n elastic-stack --timeout=300s
+        # Verify the repository exists before creating the SLM policy
+        echo "=== Checking snapshot repository exists ==="
+        REPO_CHECK=$(kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl $CURL_OPTS -w "\n%{http_code}" -u "elastic:${ES_PASSWORD}" \
+          "${ES_URL}/_snapshot/my_gcs_repository")
 
-        echo "Creating SLM snapshot policy..."
+        REPO_CODE=$(echo "$REPO_CHECK" | tail -1)
+        if [ "$REPO_CODE" != "200" ]; then
+          echo "##vso[task.logissue type=error]Snapshot repository 'my_gcs_repository' does not exist!"
+          echo "##vso[task.logissue type=error]The 'Register GCS Snapshot Repository' step must succeed first."
+          echo "##vso[task.logissue type=error]Check: 1) GCS bucket '$(GCS_BUCKET_NAME)' exists  2) GCS credentials secret is correct  3) Secure settings were reloaded"
+          exit 1
+        fi
+        echo "Repository exists."
+
+        echo ""
+        echo "=== Creating SLM snapshot policy ==="
 
         # Create the SLM policy
-        # Schedule: 0 0 2 * * ? = 10 PM EST = 2 AM UTC (next day)
-        kubectl exec -n elastic-stack elasticsearch-es-master-0 -- curl -s -k -u "elastic:${ES_PASSWORD}" \
-          -X PUT "https://elasticsearch-es-http.elastic-stack.svc:9200/_slm/policy/daily-gcs-snapshots" \
+        # Schedule: 0 0 2 * * ? = 2 AM UTC daily
+        SLM_RESPONSE=$(kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+          curl $CURL_OPTS -w "\n%{http_code}" -u "elastic:${ES_PASSWORD}" \
+          -X PUT "${ES_URL}/_slm/policy/daily-gcs-snapshots" \
           -H "Content-Type: application/json" \
           -d '{
             "schedule": "0 0 2 * * ?",
@@ -322,24 +412,33 @@ steps:
               "min_count": 5,
               "max_count": 30
             }
-          }'
+          }')
+
+        SLM_CODE=$(echo "$SLM_RESPONSE" | tail -1)
+        SLM_BODY=$(echo "$SLM_RESPONSE" | head -n -1)
+        echo "SLM Response ($SLM_CODE): $SLM_BODY"
+
+        if [ "$SLM_CODE" != "200" ]; then
+          echo "##vso[task.logissue type=error]Failed to create SLM policy. Response: $SLM_BODY"
+          exit 1
+        fi
 
         echo ""
         echo "SLM policy created. Triggering immediate snapshot..."
 
         # Trigger an immediate snapshot to validate the setup
         kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
-          curl -s -k -u "elastic:${ES_PASSWORD}" \
-          -X POST "https://elasticsearch-es-http.elastic-stack.svc:9200/_slm/policy/daily-gcs-snapshots/_execute" \
+          curl $CURL_OPTS -u "elastic:${ES_PASSWORD}" \
+          -X POST "${ES_URL}/_slm/policy/daily-gcs-snapshots/_execute" \
           -H "Content-Type: application/json"
 
         echo ""
-        echo "Verifying SLM policy was created..."
+        echo "=== Verifying SLM policy ==="
         kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
-          curl -s -k -u "elastic:${ES_PASSWORD}" \
-          "https://elasticsearch-es-http.elastic-stack.svc:9200/_slm/policy/daily-gcs-snapshots" \
-          | grep -o '"name":"[^"]*"'
+          curl $CURL_OPTS -u "elastic:${ES_PASSWORD}" \
+          "${ES_URL}/_slm/policy/daily-gcs-snapshots"
 
+        echo ""
         echo "Snapshot policy setup complete!"
 
   - task: Bash@3

@@ -264,6 +264,42 @@ steps:
         sleep 10
 
   - task: Bash@3
+    displayName: 'Create GCS Snapshot Bucket'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+
+        BUCKET_NAME="$(GCS_BUCKET_NAME)"
+        PROJECT_ID="$(GCP_PROJECT_ID)"
+
+        echo "=== Creating GCS bucket for snapshots ==="
+        echo "Bucket: gs://$BUCKET_NAME"
+        echo "Project: $PROJECT_ID"
+        echo ""
+
+        # Check if bucket already exists
+        if gcloud storage buckets describe "gs://$BUCKET_NAME" --project="$PROJECT_ID" &>/dev/null; then
+          echo "Bucket gs://$BUCKET_NAME already exists. Skipping creation."
+        else
+          echo "Creating bucket gs://$BUCKET_NAME..."
+          gcloud storage buckets create "gs://$BUCKET_NAME" \
+            --project="$PROJECT_ID" \
+            --location=us-east1 \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+
+          echo "Bucket created successfully."
+        fi
+
+        # Verify bucket is accessible
+        echo ""
+        echo "=== Verifying bucket access ==="
+        gcloud storage buckets describe "gs://$BUCKET_NAME" --project="$PROJECT_ID" --format="value(name,location,storageClass)"
+        echo "Bucket is ready for snapshots."
+
+  - task: Bash@3
     displayName: 'Register GCS Snapshot Repository'
     enabled: true
     inputs:

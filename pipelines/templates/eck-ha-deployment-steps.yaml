@@ -308,13 +308,45 @@ steps:
         done
 
   - task: Bash@3
-    displayName: 'Register Hot Snapshot Repository'
+    displayName: 'Create GCS Snapshot Buckets'
     enabled: true
     inputs:
       targetType: 'inline'
       script: |
         set -euo pipefail
         export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        PROJECT_ID="$(GCP_PROJECT_ID)"
+
+        for BUCKET_NAME in "$(HOT_BUCKET_NAME)" "$(COLD_BUCKET_NAME)"; do
+          echo "=== Bucket: gs://$BUCKET_NAME ==="
+          if gcloud storage buckets describe "gs://$BUCKET_NAME" --project="$PROJECT_ID" &>/dev/null; then
+            echo "Already exists. Skipping."
+          else
+            echo "Creating..."
+            gcloud storage buckets create "gs://$BUCKET_NAME" \
+              --project="$PROJECT_ID" \
+              --location=us-east1 \
+              --uniform-bucket-level-access \
+              --public-access-prevention
+            echo "Created."
+          fi
+          echo ""
+        done
+
+        echo "All snapshot buckets are ready."
+
+  - task: Bash@3
+    displayName: 'Reload Secure Settings & Register Snapshot Repositories'
+    enabled: true
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+        ES_URL="https://elasticsearch-es-http.elastic-stack.svc:9200"
+        CURL_OPTS="-s -k"
 
         # Wait for ES to be ready
         kubectl wait --for=condition=Ready pod \
@@ -324,48 +356,76 @@ steps:
         # Get elastic password
         ES_PASSWORD=$(kubectl get secret elasticsearch-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
 
-        echo "Registering hot snapshot repository..."
+        # Reload secure settings so ES picks up GCS credentials
+        echo "=== Reloading secure settings (GCS credentials) ==="
         kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
-          curl -s -k -u "elastic:${ES_PASSWORD}" \
-          -X PUT "https://elasticsearch-es-http.elastic-stack.svc:9200/_snapshot/hot-snapshot-repo" \
-          -H "Content-Type: application/json" \
-          -d '{
-            "type": "gcs",
-            "settings": {
-              "bucket": "$(HOT_BUCKET_NAME)",
-              "base_path": "hot-snapshots",
-              "client": "default"
-            }
-          }'
+          curl $CURL_OPTS -u "elastic:${ES_PASSWORD}" \
+          -X POST "${ES_URL}/_nodes/reload_secure_settings" \
+          -H "Content-Type: application/json" -d '{}'
         echo ""
-        echo "Hot snapshot repository registered."
 
-  - task: Bash@3
-    displayName: 'Register Cold Snapshot Repository'
-    enabled: true
-    inputs:
-      targetType: 'inline'
-      script: |
-        set -euo pipefail
-        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+        echo "Waiting 15s for credentials to propagate..."
+        sleep 15
 
-        ES_PASSWORD=$(kubectl get secret elasticsearch-es-elastic-user -n elastic-stack -o jsonpath='{.data.elastic}' | base64 -d)
-
-        echo "Registering cold snapshot repository..."
-        kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
-          curl -s -k -u "elastic:${ES_PASSWORD}" \
-          -X PUT "https://elasticsearch-es-http.elastic-stack.svc:9200/_snapshot/cold-snapshot-repo" \
-          -H "Content-Type: application/json" \
-          -d '{
-            "type": "gcs",
-            "settings": {
-              "bucket": "$(COLD_BUCKET_NAME)",
-              "base_path": "cold-snapshots",
-              "client": "default"
-            }
-          }'
+        # Register hot snapshot repository with retry
         echo ""
-        echo "Cold snapshot repository registered."
+        echo "=== Registering hot snapshot repository ==="
+        for i in $(seq 1 5); do
+          RESPONSE=$(kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+            curl $CURL_OPTS -w "\n%{http_code}" -u "elastic:${ES_PASSWORD}" \
+            -X PUT "${ES_URL}/_snapshot/hot-snapshot-repo" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "gcs",
+              "settings": {
+                "bucket": "$(HOT_BUCKET_NAME)",
+                "base_path": "hot-snapshots",
+                "client": "default"
+              }
+            }')
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "Attempt $i - Response ($HTTP_CODE): $BODY"
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "Hot snapshot repository registered!"
+            break
+          fi
+          if [ "$i" -eq 5 ]; then
+            echo "##vso[task.logissue type=error]Failed to register hot snapshot repository."
+            exit 1
+          fi
+          sleep 10
+        done
+
+        # Register cold snapshot repository with retry
+        echo ""
+        echo "=== Registering cold snapshot repository ==="
+        for i in $(seq 1 5); do
+          RESPONSE=$(kubectl exec -n elastic-stack elasticsearch-es-master-0 -- \
+            curl $CURL_OPTS -w "\n%{http_code}" -u "elastic:${ES_PASSWORD}" \
+            -X PUT "${ES_URL}/_snapshot/cold-snapshot-repo" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "gcs",
+              "settings": {
+                "bucket": "$(COLD_BUCKET_NAME)",
+                "base_path": "cold-snapshots",
+                "client": "default"
+              }
+            }')
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "Attempt $i - Response ($HTTP_CODE): $BODY"
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "Cold snapshot repository registered!"
+            break
+          fi
+          if [ "$i" -eq 5 ]; then
+            echo "##vso[task.logissue type=error]Failed to register cold snapshot repository."
+            exit 1
+          fi
+          sleep 10
+        done
 
   - task: Bash@3
     displayName: 'Create Hot SLM Policy'

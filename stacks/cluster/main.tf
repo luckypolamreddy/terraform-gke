@@ -24,6 +24,36 @@ locals {
   # Default mode: use "default" network and subnet
   network    = local.is_default ? "default" : var.vpc_self_link
   subnetwork = local.is_default ? "default" : module.subnet[0].subnet_self_link
+
+  # GPU node pool — conditionally appended when enable_gpu = true
+  gpu_node_pool = var.enable_gpu ? [
+    {
+      name               = var.gpu_pool_name
+      machine_type       = var.gpu_pool_machine_type
+      node_count         = var.gpu_pool_node_count
+      node_locations     = var.gpu_pool_zone != "" ? [var.gpu_pool_zone] : []
+      disk_type          = "pd-ssd"
+      disk_size_gb       = var.gpu_pool_disk_size_gb
+      image_type         = "COS_CONTAINERD"
+      enable_autoscaling = false
+      min_node_count     = 0
+      max_node_count     = 0
+      auto_upgrade       = true
+      labels             = { gpu = "true" }
+      taints = [
+        {
+          key    = "nvidia.com/gpu"
+          value  = "present"
+          effect = "NO_SCHEDULE"
+        }
+      ]
+      gpu_type  = var.gpu_type
+      gpu_count = var.gpu_count
+    }
+  ] : []
+
+  # Merge tfvars node pools + optional GPU pool
+  all_node_pools = concat(var.node_pools, local.gpu_node_pool)
 }
 
 # Custom subnet — only created in "custom" mode
@@ -82,8 +112,8 @@ module "gke_cluster" {
   usage_metering_dataset_id      = var.usage_metering_dataset_id
   enable_network_egress_metering = var.enable_network_egress_metering
 
-  # Node pools
-  node_pools = var.node_pools
+  # Node pools (includes GPU pool when enable_gpu=true)
+  node_pools = local.all_node_pools
 
   deletion_protection = var.deletion_protection
 

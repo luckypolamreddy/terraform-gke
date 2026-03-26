@@ -149,6 +149,55 @@ variable "deletion_protection" {
   default = false
 }
 
+# ---- GPU Node Pool (controlled via pipeline parameters) ----
+variable "enable_gpu" {
+  description = "Enable GPU node pool deployment"
+  type        = bool
+  default     = false
+}
+
+variable "gpu_pool_name" {
+  description = "Name of the GPU node pool"
+  type        = string
+  default     = "gpu-pool"
+}
+
+variable "gpu_pool_machine_type" {
+  description = "Machine type for GPU nodes"
+  type        = string
+  default     = "n1-highmem-16"
+}
+
+variable "gpu_pool_node_count" {
+  description = "Number of GPU nodes (per zone unless gpu_pool_zone is set)"
+  type        = number
+  default     = 1
+}
+
+variable "gpu_pool_zone" {
+  description = "Single zone for GPU pool (e.g. us-east1-b). Empty = spread across all zones."
+  type        = string
+  default     = ""
+}
+
+variable "gpu_type" {
+  description = "GPU accelerator type (e.g. nvidia-tesla-t4, nvidia-tesla-v100, nvidia-tesla-a100)"
+  type        = string
+  default     = "nvidia-tesla-t4"
+}
+
+variable "gpu_count" {
+  description = "Number of GPUs per node"
+  type        = number
+  default     = 1
+}
+
+variable "gpu_pool_disk_size_gb" {
+  description = "Disk size in GB for GPU nodes"
+  type        = number
+  default     = 200
+}
+
 # ---- GCS Snapshot Bucket ----
 variable "snapshot_bucket_suffix" {
   description = "Suffix appended to cluster name for the GCS snapshot bucket (e.g. bucket-01, hot-snapshots)"

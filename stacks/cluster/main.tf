@@ -25,8 +25,12 @@ locals {
   network    = local.is_default ? "default" : var.vpc_self_link
   subnetwork = local.is_default ? "default" : module.subnet[0].subnet_self_link
 
-  # GPU node pool — conditionally appended when enable_gpu = true
-  gpu_node_pool = var.enable_gpu ? [
+  # Node pool type: "standard" = tfvars pools only, "gpu" = GPU pool only, "both" = tfvars + GPU
+  include_standard = var.node_pool_type == "standard" || var.node_pool_type == "both"
+  include_gpu      = var.node_pool_type == "gpu" || var.node_pool_type == "both"
+
+  # GPU node pool definition
+  gpu_node_pool = local.include_gpu ? [
     {
       name               = var.gpu_pool_name
       machine_type       = var.gpu_pool_machine_type
@@ -52,10 +56,11 @@ locals {
     }
   ] : []
 
-  # Merge tfvars node pools + optional GPU pool
-  # Filter out any tfvars pool with same name as GPU pool to prevent duplicates
-  base_node_pools = var.enable_gpu ? [for pool in var.node_pools : pool if pool.name != var.gpu_pool_name] : var.node_pools
-  all_node_pools  = concat(local.base_node_pools, local.gpu_node_pool)
+  # Standard pools from tfvars (filter out gpu-pool name to prevent duplicates)
+  standard_pools = local.include_standard ? [for pool in var.node_pools : pool if pool.name != var.gpu_pool_name] : []
+
+  # Final merged pool list
+  all_node_pools = concat(local.standard_pools, local.gpu_node_pool)
 }
 
 # Custom subnet — only created in "custom" mode

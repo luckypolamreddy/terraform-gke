@@ -34,16 +34,17 @@ parameters:
     type: number
     default: 1
 
-  - name: enableGpu
-    displayName: 'Enable GPU Node Pool'
+  - name: nodePoolType
+    displayName: 'Node Pool Type'
     type: string
-    default: 'false'
+    default: 'standard'
     values:
-      - 'true'
-      - 'false'
+      - standard
+      - gpu
+      - both
 
   - name: gpuPoolMachineType
-    displayName: 'GPU Node Machine Type'
+    displayName: 'GPU Node Machine Type (ignored if nodePoolType=standard)'
     type: string
     default: 'n1-highmem-16'
     values:
@@ -54,7 +55,7 @@ parameters:
       - a2-highgpu-1g
 
   - name: gpuType
-    displayName: 'GPU Accelerator Type'
+    displayName: 'GPU Accelerator Type (ignored if nodePoolType=standard)'
     type: string
     default: 'nvidia-tesla-t4'
     values:
@@ -64,19 +65,19 @@ parameters:
       - nvidia-l4
 
   - name: gpuCount
-    displayName: 'GPUs per Node'
+    displayName: 'GPUs per Node (ignored if nodePoolType=standard)'
     type: number
     default: 1
 
   - name: gpuPoolNodeCount
-    displayName: 'GPU Node Count'
+    displayName: 'GPU Node Count (ignored if nodePoolType=standard)'
     type: number
     default: 1
 
   - name: gpuPoolZone
-    displayName: 'GPU Pool Zone (empty = all zones)'
+    displayName: 'GPU Pool Zone (e.g. us-east1-b, ignored if nodePoolType=standard)'
     type: string
-    default: ''
+    default: 'us-east1-b'
 
 variables:
   - group: gcp-credentials-${{ parameters.project }}
@@ -116,7 +117,7 @@ stages:
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/cluster.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
                     backendPrefix: 'cluster/${{ parameters.project }}/${{ parameters.clusterName }}'
-                    extraVars: '-var=cluster_name=${{ parameters.clusterName }} -var=cluster_index=${{ parameters.clusterIndex }} -var=enable_gpu=${{ parameters.enableGpu }} -var=gpu_pool_machine_type=${{ parameters.gpuPoolMachineType }} -var=gpu_type=${{ parameters.gpuType }} -var=gpu_count=${{ parameters.gpuCount }} -var=gpu_pool_node_count=${{ parameters.gpuPoolNodeCount }} -var=gpu_pool_zone=${{ parameters.gpuPoolZone }}'
+                    extraVars: '-var=cluster_name=${{ parameters.clusterName }} -var=cluster_index=${{ parameters.clusterIndex }} -var=node_pool_type=${{ parameters.nodePoolType }} -var=gpu_pool_machine_type=${{ parameters.gpuPoolMachineType }} -var=gpu_type=${{ parameters.gpuType }} -var=gpu_count=${{ parameters.gpuCount }} -var=gpu_pool_node_count=${{ parameters.gpuPoolNodeCount }} -var=gpu_pool_zone=${{ parameters.gpuPoolZone }}'
 
   # Stage 2: Apply (only when action=apply)
   - stage: Apply
@@ -139,7 +140,7 @@ stages:
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/cluster.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
                     backendPrefix: 'cluster/${{ parameters.project }}/${{ parameters.clusterName }}'
-                    extraVars: '-var=cluster_name=${{ parameters.clusterName }} -var=cluster_index=${{ parameters.clusterIndex }} -var=enable_gpu=${{ parameters.enableGpu }} -var=gpu_pool_machine_type=${{ parameters.gpuPoolMachineType }} -var=gpu_type=${{ parameters.gpuType }} -var=gpu_count=${{ parameters.gpuCount }} -var=gpu_pool_node_count=${{ parameters.gpuPoolNodeCount }} -var=gpu_pool_zone=${{ parameters.gpuPoolZone }}'
+                    extraVars: '-var=cluster_name=${{ parameters.clusterName }} -var=cluster_index=${{ parameters.clusterIndex }} -var=node_pool_type=${{ parameters.nodePoolType }} -var=gpu_pool_machine_type=${{ parameters.gpuPoolMachineType }} -var=gpu_type=${{ parameters.gpuType }} -var=gpu_count=${{ parameters.gpuCount }} -var=gpu_pool_node_count=${{ parameters.gpuPoolNodeCount }} -var=gpu_pool_zone=${{ parameters.gpuPoolZone }}'
 
   # Stage 3: Destroy (only when action=destroy)
   - stage: Destroy
@@ -162,4 +163,4 @@ stages:
                     tfvarsFile: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.project }}/cluster.tfvars'
                     backendBucket: '$(TF_STATE_BUCKET)'
                     backendPrefix: 'cluster/${{ parameters.project }}/${{ parameters.clusterName }}'
-                    extraVars: '-var=cluster_name=${{ parameters.clusterName }} -var=cluster_index=${{ parameters.clusterIndex }} -var=enable_gpu=${{ parameters.enableGpu }} -var=gpu_pool_machine_type=${{ parameters.gpuPoolMachineType }} -var=gpu_type=${{ parameters.gpuType }} -var=gpu_count=${{ parameters.gpuCount }} -var=gpu_pool_node_count=${{ parameters.gpuPoolNodeCount }} -var=gpu_pool_zone=${{ parameters.gpuPoolZone }}'
+                    extraVars: '-var=cluster_name=${{ parameters.clusterName }} -var=cluster_index=${{ parameters.clusterIndex }} -var=node_pool_type=${{ parameters.nodePoolType }} -var=gpu_pool_machine_type=${{ parameters.gpuPoolMachineType }} -var=gpu_type=${{ parameters.gpuType }} -var=gpu_count=${{ parameters.gpuCount }} -var=gpu_pool_node_count=${{ parameters.gpuPoolNodeCount }} -var=gpu_pool_zone=${{ parameters.gpuPoolZone }}'

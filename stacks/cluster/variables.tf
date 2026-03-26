@@ -150,10 +150,15 @@ variable "deletion_protection" {
 }
 
 # ---- GPU Node Pool (controlled via pipeline parameters) ----
-variable "enable_gpu" {
-  description = "Enable GPU node pool deployment"
-  type        = bool
-  default     = false
+variable "node_pool_type" {
+  description = "Which node pools to deploy: standard (tfvars pools only), gpu (GPU pool only), both (tfvars + GPU)"
+  type        = string
+  default     = "standard"
+
+  validation {
+    condition     = contains(["standard", "gpu", "both"], var.node_pool_type)
+    error_message = "node_pool_type must be 'standard', 'gpu', or 'both'."
+  }
 }
 
 variable "gpu_pool_name" {
@@ -175,9 +180,9 @@ variable "gpu_pool_node_count" {
 }
 
 variable "gpu_pool_zone" {
-  description = "Single zone for GPU pool (e.g. us-east1-b). Empty = spread across all zones."
+  description = "Single zone for GPU pool (e.g. us-east1-b). Defaults to us-east1-b for single-node deployment."
   type        = string
-  default     = ""
+  default     = "us-east1-b"
 }
 
 variable "gpu_type" {

@@ -53,7 +53,9 @@ locals {
   ] : []
 
   # Merge tfvars node pools + optional GPU pool
-  all_node_pools = concat(var.node_pools, local.gpu_node_pool)
+  # Filter out any tfvars pool with same name as GPU pool to prevent duplicates
+  base_node_pools = var.enable_gpu ? [for pool in var.node_pools : pool if pool.name != var.gpu_pool_name] : var.node_pools
+  all_node_pools  = concat(local.base_node_pools, local.gpu_node_pool)
 }
 
 # Custom subnet — only created in "custom" mode

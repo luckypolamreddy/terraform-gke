@@ -69,6 +69,9 @@ node_pools = [
     name               = "gpu-pool"
     machine_type       = "n1-highmem-16"
     node_count         = 1
+    # Single zone = exactly 1 GPU node total (cost-effective for dev/test)
+    # Remove node_locations to get 1 node per zone (3 total) for HA
+    node_locations     = ["us-east1-b"]
     disk_type          = "pd-ssd"
     disk_size_gb       = 200
     image_type         = "COS_CONTAINERD"

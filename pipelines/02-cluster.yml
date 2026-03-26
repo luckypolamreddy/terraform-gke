@@ -36,8 +36,11 @@ parameters:
 
   - name: enableGpu
     displayName: 'Enable GPU Node Pool'
-    type: boolean
-    default: false
+    type: string
+    default: 'false'
+    values:
+      - 'true'
+      - 'false'
 
   - name: gpuPoolMachineType
     displayName: 'GPU Node Machine Type'

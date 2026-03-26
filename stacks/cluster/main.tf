@@ -89,3 +89,23 @@ module "gke_cluster" {
 
   depends_on = [module.subnet]
 }
+
+# ---- GCS Snapshot Bucket (deployed with the cluster) ----
+module "snapshot_bucket" {
+  source = "../../modules/gcs-bucket"
+
+  project_id    = var.project_id
+  bucket_name   = "${local.cluster_name}-${var.snapshot_bucket_suffix}"
+  location      = var.region
+  storage_class = var.snapshot_bucket_storage_class
+  force_destroy = var.snapshot_bucket_force_destroy
+
+  enable_versioning = true
+
+  lifecycle_rules = var.snapshot_retention_days > 0 ? [
+    {
+      action_type   = "Delete"
+      condition_age = var.snapshot_retention_days
+    }
+  ] : []
+}

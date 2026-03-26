@@ -137,6 +137,18 @@ resource "google_container_node_pool" "pools" {
       }
     }
 
+    # GPU accelerator (optional - only added when gpu_count > 0)
+    dynamic "guest_accelerator" {
+      for_each = try(each.value.gpu_count, 0) > 0 ? [1] : []
+      content {
+        type  = each.value.gpu_type
+        count = each.value.gpu_count
+        gpu_driver_installation_config {
+          gpu_driver_version = "DEFAULT"
+        }
+      }
+    }
+
     metadata = {
       disable-legacy-endpoints = "true"
     }

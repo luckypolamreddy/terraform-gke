@@ -131,6 +131,9 @@ variable "node_pools" {
       value  = string
       effect = string
     }))
+    # GPU configuration (optional)
+    gpu_type  = optional(string, "")
+    gpu_count = optional(number, 0)
   }))
 }
 

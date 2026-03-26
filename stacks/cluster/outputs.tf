@@ -38,3 +38,13 @@ output "pods_cidr" {
 output "services_cidr" {
   value = local.is_default ? "auto-allocated" : local.services_cidr
 }
+
+output "snapshot_bucket_name" {
+  description = "GCS bucket name for Elasticsearch snapshots"
+  value       = module.snapshot_bucket.bucket_name
+}
+
+output "snapshot_bucket_url" {
+  description = "GCS bucket URL for Elasticsearch snapshots"
+  value       = module.snapshot_bucket.bucket_url
+}

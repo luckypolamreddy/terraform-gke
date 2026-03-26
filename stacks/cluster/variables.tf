@@ -138,10 +138,38 @@ variable "node_pools" {
       value  = string
       effect = string
     }))
+    # GPU configuration (optional)
+    gpu_type  = optional(string, "")
+    gpu_count = optional(number, 0)
   }))
 }
 
 variable "deletion_protection" {
   type    = bool
   default = false
+}
+
+# ---- GCS Snapshot Bucket ----
+variable "snapshot_bucket_suffix" {
+  description = "Suffix appended to cluster name for the GCS snapshot bucket (e.g. bucket-01, hot-snapshots)"
+  type        = string
+  default     = "bucket-01"
+}
+
+variable "snapshot_bucket_storage_class" {
+  description = "Storage class for the snapshot bucket"
+  type        = string
+  default     = "STANDARD"
+}
+
+variable "snapshot_retention_days" {
+  description = "Days before snapshot objects are auto-deleted (0 to disable)"
+  type        = number
+  default     = 30
+}
+
+variable "snapshot_bucket_force_destroy" {
+  description = "Allow snapshot bucket deletion even with objects inside"
+  type        = bool
+  default     = false
 }

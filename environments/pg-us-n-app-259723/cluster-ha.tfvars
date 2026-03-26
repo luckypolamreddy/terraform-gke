@@ -39,6 +39,12 @@ enable_network_egress_metering = false
 
 deletion_protection = false
 
+# GCS Snapshot Bucket (deployed with cluster)
+snapshot_bucket_suffix        = "bucket-01"
+snapshot_bucket_storage_class = "STANDARD"
+snapshot_retention_days       = 30
+snapshot_bucket_force_destroy = true
+
 # ============================================================
 # Node Pools - HA (3 pools across 3 zones)
 # ============================================================

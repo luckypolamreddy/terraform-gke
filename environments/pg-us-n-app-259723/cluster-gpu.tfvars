@@ -1,17 +1,16 @@
 # ============================================================
-# pg-us-e-app-012345 - Cluster Configuration (Prod)
+# pg-us-n-app-259723 - GPU Cluster Configuration (Non-Prod)
+# ============================================================
+# Standard elastic pool + T4 GPU node pool
+# Use this tfvars when you need GPU workloads alongside ECK
 # ============================================================
 
-project_id = "pg-us-e-app-012345"
+project_id = "pg-us-n-app-259723"
 region     = "us-east1"
 location   = "us-east1"
 
-# Network — Custom VPC for prod (dedicated subnets per cluster)
-# cluster_index auto-calculates unique CIDRs: 10.<index>.0.0/20
-# Pass -var=cluster_index=N at pipeline runtime (1, 2, 3...)
-network_mode  = "custom"
-vpc_self_link = "projects/pg-us-e-app-012345/global/networks/pg-us-e-app-012345-vpc"
-# cluster_index is passed as pipeline parameter (no hardcoded CIDRs)
+# Network
+network_mode = "default"
 
 # Cluster (cluster_name is provided at pipeline runtime)
 kubernetes_version = "1.30"
@@ -29,6 +28,7 @@ enable_backup              = true
 enable_cost_allocation     = true
 enable_managed_prometheus  = true
 
+# Logging
 logging_components    = ["SYSTEM_COMPONENTS", "WORKLOADS"]
 monitoring_components = ["SYSTEM_COMPONENTS"]
 
@@ -37,16 +37,17 @@ enable_network_egress_metering = false
 
 deletion_protection = false
 
-# GCS Snapshot Bucket (deployed with cluster)
+# GCS Snapshot Bucket
 snapshot_bucket_suffix        = "bucket-01"
 snapshot_bucket_storage_class = "STANDARD"
-snapshot_retention_days       = 90
-snapshot_bucket_force_destroy = false
+snapshot_retention_days       = 30
+snapshot_bucket_force_destroy = true
 
 # ============================================================
-# Node Pools - Prod (3 nodes across 3 zones)
+# Node Pools
 # ============================================================
-# Single pool: n1-highmem-16 - ES (3) + Kibana (3) + ECK operator + system
+# elastic-pool: ES (3) + Kibana + ECK operator + system workloads
+# gpu-pool:     T4 GPU workloads (tainted so only GPU pods land here)
 # ============================================================
 
 node_pools = [
@@ -55,13 +56,38 @@ node_pools = [
     machine_type       = "n1-highmem-16"
     node_count         = 1
     disk_type          = "pd-ssd"
-    disk_size_gb       = 1000
+    disk_size_gb       = 500
     image_type         = "COS_CONTAINERD"
     enable_autoscaling = false
     min_node_count     = 0
     max_node_count     = 0
     auto_upgrade       = true
-    labels = {}
-    taints = []
+    labels             = {}
+    taints             = []
+  },
+  {
+    name               = "gpu-pool"
+    machine_type       = "n1-highmem-16"
+    node_count         = 1
+    disk_type          = "pd-ssd"
+    disk_size_gb       = 200
+    image_type         = "COS_CONTAINERD"
+    enable_autoscaling = false
+    min_node_count     = 0
+    max_node_count     = 0
+    auto_upgrade       = true
+    labels = {
+      gpu = "true"
+    }
+    taints = [
+      {
+        key    = "nvidia.com/gpu"
+        value  = "present"
+        effect = "NO_SCHEDULE"
+      }
+    ]
+    # NVIDIA Tesla T4 - 1 GPU per node
+    gpu_type  = "nvidia-tesla-t4"
+    gpu_count = 1
   }
 ]

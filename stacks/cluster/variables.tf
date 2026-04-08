@@ -223,7 +223,7 @@ variable "snapshot_retention_days" {
 }
 
 variable "snapshot_bucket_force_destroy" {
-  description = "Allow snapshot bucket deletion even with objects inside"
+  description = "Allow snapshot bucket deletion even with objects inside (must be true for clean cluster destroy)"
   type        = bool
-  default     = false
+  default     = true
 }
